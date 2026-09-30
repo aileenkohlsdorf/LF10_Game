@@ -4,7 +4,7 @@
 
 Ein 2D-Game, das im Rahmen von LF10 entwickelt wird.
 
-Das Projekt besteht aus einem Python-Backend und einem JavaScript-Frontend. Das Backend kümmert sich unter anderem um Benutzerkonten, Sessions und das Speichern des Spielfortschritts.
+Das Projekt besteht aus einem Python-Backend und einem JavaScript-Frontend. 
 
 ## Projektstruktur
 

@@ -29,6 +29,6 @@ Die Entwicklung des 2D-Frontends und der Oberwelt befindet sich noch im Aufbau.
 
 ## Contributors
 
-Mia Sadowsky
-Aileen Kohlsdorf
+* Mia Sadowsky
+* Aileen Kohlsdorf
 

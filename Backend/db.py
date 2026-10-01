@@ -28,5 +28,25 @@ def init_database():
         )
     """)
 
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS saves (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE NOT NULL,
+            coins INTEGER NOT NULL DEFAULT 0,
+            bullets INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS completed_levels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            level_id INTEGER NOT NULL,
+            UNIQUE(user_id, level_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
     connection.commit()
     connection.close()

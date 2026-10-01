@@ -1,15 +1,22 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LF10 Game - Overworld</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Level 1</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-
-<canvas id="gameCanvas" width="1280" height="720"></canvas>
-
-<script src="js/overworld.js"></script>
-
+<div id="stage" tabindex="0">
+  <canvas id="game" width="960" height="540"></canvas>
+  <div id="hud"></div>
+  <div id="hint">← → Bewegen · Leertaste Springen (2x = Doppelsprung) · Zacken & Abgründe = Schaden</div>
+  <div id="focusNotice">Klicken zum Starten</div>
+  <div id="message">
+    <div id="message-text"></div>
+    <button id="message-btn">Nochmal versuchen</button>
+  </div>
+</div>
+<script src="game.js"></script>
 </body>
 </html>

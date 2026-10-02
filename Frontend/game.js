@@ -17,6 +17,7 @@ const ENEMY_SPAWNS = [
   { type: "zombie",         x: 620,  y: 418 }, // breite Plattform in der Mitte (x 450–702)
   { type: "skeleton",       x: 256,  y: 274 }, // schwebende Plattform links (x 210–302)
   { type: "skeletonShield", x: 1150, y: 274 }, // grosse Plattform ganz rechts (x 994–1278)
+  { type: "axeZombie",      x: 880,  y: 402 }, // Plattform mit den Baeumen (x 786–958), jagt den Spieler
 ];
 
 // --- Asset-Loader ---------------------------------------------------
@@ -154,6 +155,79 @@ const ENEMY_TYPES = {
     hitColor: "#e8e4d8", shield: true, crumble: true,
   },
 };
+// Axt-Zombie ("Jaeger"): eigene Sheets pro Blickrichtung (Side = rechts,
+// Side-left = links), Frames sind eng zugeschnitten und unterschiedlich breit.
+// anchor = x-Position des Kopfes im ersten Frame (Sprite-Pixel), daran wird
+// das Sprite ueber der Hitbox ausgerichtet, damit es beim Animationswechsel
+// nicht springt. Fuesse stehen immer am unteren Frame-Rand.
+const AXE = "assets/enemies/zombie-axe/";
+function axeAnim(name, frames, ticks, loop, anchorR, anchorL) {
+  return {
+    r: { img: loadImg(`${AXE}Zombie_Axe_Side_${name}-Sheet${frames}.png`), frames, ticks, loop, anchor: anchorR },
+    l: { img: loadImg(`${AXE}Zombie_Axe_Side-left_${name}-Sheet${frames}.png`), frames, ticks, loop, anchor: anchorL },
+  };
+}
+const axeWalk = axeAnim("Walk", 8, 8, true, 11.5, 8.5);
+// Second-Attack = Axt-Wurf (9 Frames, in Frame 3 fliegt die Axt los).
+// Die Frames 4–8 zeigen ihn OHNE Axt -> daraus werden "unbewaffnet stehen"
+// (Frame 4) und "unbewaffnet laufen" (Frames 5–8 als Schleife).
+const axeThrowSheet = axeAnim("Second-Attack", 9, 5, false, 16.5, 9.5);
+function subAnim(src, start, frames, ticks, loop, anchorR, anchorL) {
+  return {
+    r: { ...src.r, start, frames, sheetFrames: 9, ticks, loop, anchor: anchorR },
+    l: { ...src.l, start, frames, sheetFrames: 9, ticks, loop, anchor: anchorL },
+  };
+}
+ENEMY_TYPES.axeZombie = {
+  hunter: true,   // eigene Physik: Schwerkraft, springt, verlaesst seine Plattform
+  scale: 3,       // ganzzahlig -> scharfe Pixel, ca. 54px hoch (andere Gegner ~46px)
+  anims: {
+    idle: axeAnim("Idle", 6, 10, true, 11.7, 9.3),
+    walk: axeWalk,
+    chase: { r: { ...axeWalk.r, ticks: 5 }, l: { ...axeWalk.l, ticks: 5 } },
+    attack: axeAnim("First-Attack", 7, 6, false, 12.5, 11.5),
+    throw: axeThrowSheet,
+    unarmedIdle: subAnim(axeThrowSheet, 4, 1, 10, true, 18.5, 7.5),
+    unarmedWalk: subAnim(axeThrowSheet, 5, 4, 7, true, 18.5, 7.5),
+    dead: axeAnim("First-Death", 6, 8, false, 11.7, 14.3),
+  },
+  w: 8, h: 17, hp: 8,
+  patrolSpeed: 0.5, chaseSpeed: 1.6,
+  aggroRange: 300,   // ab hier nimmt er die Jagd auf ...
+  loseRange: 560,    // ... und gibt erst bei so viel Abstand wieder auf
+  jumpForce: -12.6, jumpSpeed: 2.6, jumpCooldown: 40,
+  attackGap: 3, attackReach: 9, attackHitFrame: 4, attackCooldown: 50,
+  // Axt-Wurf: nur aus mittlerer Distanz und ungefaehr auf gleicher Hoehe
+  throwMinDist: 100, throwMaxDist: 240, throwReleaseFrame: 3,
+  throwCooldown: 200,     // Frames nach dem Aufheben, bis er wieder wirft
+  unarmedMaxTicks: 420,   // spaetestens dann hat er wieder eine Axt
+  lostAxeTicks: 150,      // Axt in Abgrund gefallen -> so lange unbewaffnet, dann neue Axt
+  hitColor: "#8a2b35", shield: false, crumble: false,
+};
+
+// --- Wurfaxt (Projektil) ---
+// Thrown = drehende Axt im Flug, Landing = einschlagen mit Staub, Landed = steckt im Boden.
+// Landed passt genau auf den letzten Landing-Frame (Versatz landedOff, Sprite-Pixel).
+const THROWN_AXE = {
+  r: {
+    thrown: { img: loadImg(`${AXE}Axe_Side_Thrown-Sheet9.png`), frames: 9 },
+    landing: { img: loadImg(`${AXE}Axe_Side_Landing-Sheet5.png`), frames: 5 },
+    landed: loadImg(`${AXE}Axe_Side_Landed.png`),
+    landedOff: [0, 4],
+  },
+  l: {
+    thrown: { img: loadImg(`${AXE}Axe_Side-left_Thrown-Sheet9.png`), frames: 9 },
+    landing: { img: loadImg(`${AXE}Axe_Side-left_Landing-Sheet5.png`), frames: 5 },
+    landed: loadImg(`${AXE}Axe_Side-left_Landed.png`),
+    landedOff: [6, 4],
+  },
+};
+const AXE_SCALE = 3;
+const AXE_SPEED = 5;           // horizontale Fluggeschwindigkeit
+const AXE_GRAVITY = 0.2;       // Bogen
+const AXE_SPIN_TICKS = 3, AXE_LANDING_TICKS = 4;
+const AXE_HITBOX = 22;
+
 const ENEMY_EDGE_PAUSE = 50; // kurz stehen bleiben an der Plattformkante
 
 // --- Canvas / Fokus ----------------------------------------------------
@@ -179,7 +253,7 @@ let LEVEL_WIDTH = 1280;
 let GROUND = [], SPIKES = [], SECRET_TRIGGER = null;
 function toRect([x, y, w, h]) { return { x, y: y + LEVEL_Y_OFFSET, w, h }; }
 
-let enemies = [], bullets = [], particles = [];
+let enemies = [], bullets = [], particles = [], axes = [];
 
 function onReady() {
   ready++;
@@ -345,9 +419,14 @@ function createEnemy(spawn) {
   const t = ENEMY_TYPES[spawn.type];
   const plat = findPlatform(spawn.x, spawn.y);
   if (!t || !plat) return null;
-  const w = Math.round(t.w * ENEMY_SCALE), h = Math.round(t.h * ENEMY_SCALE);
+  const S = t.scale || ENEMY_SCALE;
+  const w = Math.round(t.w * S), h = Math.round(t.h * S);
   return {
-    type: spawn.type, t,
+    type: spawn.type, t, S,
+    spawnX: spawn.x - w / 2, spawnY: plat.y - h,
+    vx: 0, vy: 0, grounded: true, aggro: false, jumpCooldown: 0,
+    flash: 0, maxHp: t.hp,
+    hasAxe: true, axe: null, throwCooldown: 60, unarmedTicks: 0, released: false,
     x: spawn.x - w / 2, y: plat.y - h, w, h,
     plat,
     minX: plat.x + 4, maxX: plat.x + plat.w - w - 4,
@@ -361,18 +440,23 @@ function createEnemy(spawn) {
 
 function spawnEnemies() {
   enemies = ENEMY_SPAWNS.map(createEnemy).filter(Boolean);
+  axes = [];
 }
 
 function setEnemyState(e, state) {
   if (e.state !== state) { e.state = state; e.animTick = 0; e.hitDone = false; }
 }
+function getAnim(e, state = e.state) {
+  const a = e.t.anims[state];
+  return e.t.hunter ? a[e.dir > 0 ? "r" : "l"] : a;
+}
 function enemyFrame(e) {
-  const a = e.t.anims[e.state];
+  const a = getAnim(e);
   const f = Math.floor(e.animTick / a.ticks);
-  return a.loop ? f % a.frames : Math.min(f, a.frames - 1);
+  return (a.start || 0) + (a.loop ? f % a.frames : Math.min(f, a.frames - 1));
 }
 function enemyAnimDone(e) {
-  const a = e.t.anims[e.state];
+  const a = getAnim(e);
   return !a.loop && e.animTick >= a.frames * a.ticks;
 }
 function clampToPlatform(e) {
@@ -380,8 +464,10 @@ function clampToPlatform(e) {
 }
 
 function updateEnemy(e) {
-  const t = e.t, S = ENEMY_SCALE;
+  if (e.t.hunter) { updateHunter(e); return; }
+  const t = e.t, S = e.S;
   e.animTick++;
+  if (e.flash > 0) e.flash--;
 
   if (e.state === "dead") {
     if (enemyAnimDone(e)) {
@@ -456,6 +542,268 @@ function updateEnemy(e) {
   else if (e.x >= e.maxX && e.dir > 0) { e.x = e.maxX; e.pauseTicks = ENEMY_EDGE_PAUSE; }
 }
 
+// --- Jaeger-KI (Axt-Zombie) -------------------------------------------
+function solidAt(x, y) { return GROUND.some(r => pointInRect(x, y, r)); }
+
+// Wie die Spieler-Kollision, nur fuer Gegner
+function moveWithCollisions(e) {
+  let hitWall = false;
+  e.x += e.vx;
+  for (const r of GROUND) {
+    if (rectsOverlap(e, r)) {
+      if (e.vx > 0) e.x = r.x - e.w;
+      else if (e.vx < 0) e.x = r.x + r.w;
+      hitWall = true;
+    }
+  }
+  e.y += e.vy;
+  e.grounded = false;
+  for (const r of GROUND) {
+    if (rectsOverlap(e, r)) {
+      if (e.vy > 0) { e.y = r.y - e.h; e.vy = 0; e.grounded = true; }
+      else if (e.vy < 0) { e.y = r.y + r.h; e.vy = 0; }
+    }
+  }
+  e.x = Math.max(0, Math.min(e.x, LEVEL_WIDTH - e.w));
+  return hitWall;
+}
+
+// Sprung/Fall vorher "im Kopf" durchspielen: landet er auf einer Plattform
+// (true) oder faellt er in einen Abgrund (false)? Verhindert, dass der Jaeger
+// sich in Luecken stuerzt, durch die er nicht passt.
+function landsSafely(e, vy0, vx) {
+  const sim = { x: e.x, y: e.y, w: e.w, h: e.h, vx, vy: vy0, grounded: false };
+  let doubleJumped = false;
+  for (let i = 0; i < 120; i++) {
+    sim.vy = Math.min(sim.vy + GRAVITY, 16);
+    sim.vx = vx;
+    const hitWall = moveWithCollisions(sim);
+    if (hitWall && !sim.grounded && !doubleJumped) { sim.vy = e.t.jumpForce * 0.85; doubleJumped = true; }
+    if (sim.grounded && i > 0) return true;
+    if (sim.y > H) return false;
+  }
+  return false;
+}
+
+function hunterJump(e) {
+  e.vy = e.t.jumpForce;
+  e.grounded = false;
+  e.jumpCooldown = e.t.jumpCooldown;
+  e.airVx = e.dir * e.t.jumpSpeed;
+  e.doubleJumped = false;
+}
+
+// Laeuft auf ein Ziel zu (Spieler oder die eigene Axt) und springt dabei
+// ueber Waende, auf hoehere Plattformen und ueber Luecken.
+function seek(e, targetX, targetBottom, speed) {
+  const ecx = e.x + e.w / 2;
+  const dx = targetX - ecx;
+  const dy = targetBottom - (e.y + e.h);   // > 0: Ziel liegt tiefer
+  if (Math.abs(dx) > 4) e.dir = dx > 0 ? 1 : -1;
+  if (!e.grounded) return e.dir * speed;
+
+  const fx = e.dir > 0 ? e.x + e.w + 3 : e.x - 3;
+  const wallAhead = solidAt(fx, e.y + e.h - 6) || solidAt(fx, e.y + e.h / 2);
+  const edgeAhead = !solidAt(fx, e.y + e.h + 4);
+  const targetAbove = dy < -40 && Math.abs(dx) < 50;   // Ziel steht direkt ueber ihm
+  const targetBelow = dy > 30;
+  // Wand -> drueberspringen, Ziel direkt drueber -> hochspringen,
+  // Kante -> rueberspringen (ausser das Ziel ist unten, dann einfach runterfallen)
+  const wantsJump = wallAhead || targetAbove || (edgeAhead && !targetBelow);
+  if (wantsJump && e.jumpCooldown === 0 && landsSafely(e, e.t.jumpForce, e.dir * e.t.jumpSpeed)) {
+    hunterJump(e);
+    return e.dir * speed;
+  }
+  // An der Kante: nur weiterlaufen/runterfallen, wenn unten auch Boden kommt
+  if (edgeAhead && !(targetBelow && landsSafely(e, 0, e.dir * speed))) return 0;
+  if (wallAhead) return 0;
+  return Math.abs(dx) > 4 ? e.dir * speed : 0;
+}
+
+function throwAxe(e) {
+  const handX = e.x + e.w / 2 + e.dir * 10;
+  const handY = e.y + 8;
+  // Bogen so berechnen, dass die Axt ungefaehr auf Brusthoehe beim Spieler ankommt
+  const dist = Math.abs((player.x + player.w / 2) - handX);
+  const t = Math.max(8, dist / AXE_SPEED);
+  const dyTarget = (player.y + player.h * 0.4) - handY;
+  const vy = Math.max(-6, Math.min(3, (dyTarget - 0.5 * AXE_GRAVITY * t * t) / t));
+  const axe = {
+    x: handX, y: handY, vx: e.dir * AXE_SPEED, vy, dir: e.dir,
+    state: "fly", tick: 0, owner: e, hitPlayer: false, groundY: 0, alpha: 1, removed: false,
+  };
+  axes.push(axe);
+  e.axe = axe;
+  e.hasAxe = false;
+  e.unarmedTicks = 0;
+}
+
+function updateHunter(e) {
+  const t = e.t;
+  e.animTick++;
+  if (e.flash > 0) e.flash--;
+  if (e.attackCooldown > 0) e.attackCooldown--;
+  if (e.jumpCooldown > 0) e.jumpCooldown--;
+  if (e.throwCooldown > 0) e.throwCooldown--;
+
+  e.vy = Math.min(e.vy + GRAVITY, 16);
+
+  if (e.state === "dead") {
+    e.vx = e.knockVx; e.knockVx *= 0.8;
+    moveWithCollisions(e);
+    if (enemyAnimDone(e)) {
+      e.deadTicks++;
+      if (e.deadTicks > 120) e.alpha -= 1 / 60;
+      if (e.alpha <= 0) e.removed = true;
+    }
+    return;
+  }
+
+  const S = e.S;
+  const pcx = player.x + player.w / 2, ecx = e.x + e.w / 2;
+  const dx = pcx - ecx;
+  const playerBottom = player.y + player.h;
+  const dy = playerBottom - (e.y + e.h);
+  const gap = Math.abs(dx) - (e.w + player.w) / 2;
+  const sameLevel = Math.abs(dy) < 30;
+
+  // Jagd starten/beenden
+  if (player.inSecretRoom || Math.abs(dx) > t.loseRange) e.aggro = false;
+  else if (Math.abs(dx) < t.aggroRange && Math.abs(dy) < 170) e.aggro = true;
+
+  let targetVx = 0;
+
+  if (e.state === "attack") {
+    // Nahkampf: Axt-Hieb
+    if (enemyFrame(e) >= t.attackHitFrame && !e.hitDone) {
+      e.hitDone = true;
+      const r = t.attackReach * S;
+      const reach = { x: e.dir < 0 ? e.x - r : e.x + e.w - 4, y: e.y + 6, w: r + 4, h: e.h - 10 };
+      if (rectsOverlap(player, reach)) takeDamage(e.dir);
+    }
+    if (enemyAnimDone(e)) { e.attackCooldown = t.attackCooldown; setEnemyState(e, "idle"); }
+
+  } else if (e.state === "throw") {
+    // Fernkampf: in Frame 3 verlaesst die Axt die Hand
+    if (enemyFrame(e) >= t.throwReleaseFrame && !e.released) { e.released = true; throwAxe(e); }
+    if (enemyAnimDone(e)) setEnemyState(e, "unarmedIdle");
+
+  } else if (!e.hasAxe) {
+    // Ohne Axt: zurueck zur Axt laufen und aufheben
+    e.unarmedTicks++;
+    const a = e.axe;
+    const lost = !a || a.removed;
+    if (e.unarmedTicks > t.unarmedMaxTicks || (lost && e.unarmedTicks > t.lostAxeTicks)) {
+      // Axt verloren (z. B. in einen Abgrund gefallen) -> nach kurzer Zeit "neue Axt"
+      e.hasAxe = true; e.axe = null; e.throwCooldown = t.throwCooldown;
+      if (a) a.removed = true;
+      setEnemyState(e, "idle");
+    } else if (lost) {
+      // ohne Axt weiter hinterher, aber kein Angriff moeglich
+      targetVx = e.aggro ? seek(e, pcx, playerBottom, t.chaseSpeed) : 0;
+      setEnemyState(e, targetVx ? "unarmedWalk" : "unarmedIdle");
+    } else if (a.state === "fly") {
+      setEnemyState(e, "unarmedIdle");          // erst mal zuschauen, wo sie landet
+    } else {
+      const atAxe = Math.abs(a.x - ecx) < 10 && Math.abs(a.groundY - (e.y + e.h)) < 8 && e.grounded;
+      if (atAxe) {
+        a.removed = true; e.axe = null; e.hasAxe = true;
+        e.throwCooldown = t.throwCooldown;
+        setEnemyState(e, "idle");
+      } else {
+        targetVx = seek(e, a.x, a.groundY, t.chaseSpeed);
+        setEnemyState(e, targetVx ? "unarmedWalk" : "unarmedIdle");
+      }
+    }
+
+  } else if (e.aggro) {
+    if (Math.abs(dx) > 4) e.dir = dx > 0 ? 1 : -1;
+    const inReach = gap < t.attackGap * S && sameLevel;
+    const canThrow = e.grounded && e.throwCooldown === 0 && Math.abs(dy) < 50 &&
+      Math.abs(dx) > t.throwMinDist && Math.abs(dx) < t.throwMaxDist;
+    if (inReach) {
+      if (e.grounded && e.attackCooldown === 0) setEnemyState(e, "attack");
+      else setEnemyState(e, "idle");
+    } else if (canThrow) {
+      e.released = false;
+      setEnemyState(e, "throw");
+    } else {
+      targetVx = seek(e, pcx, playerBottom, t.chaseSpeed);
+      setEnemyState(e, targetVx || !e.grounded ? "chase" : "idle");
+    }
+
+  } else {
+    // Patrouille auf der aktuellen Plattform, bis er den Spieler bemerkt
+    if (e.pauseTicks > 0) {
+      setEnemyState(e, "idle");
+      if (--e.pauseTicks === 0) e.dir *= -1;
+    } else {
+      setEnemyState(e, "walk");
+      targetVx = e.dir * t.patrolSpeed;
+      const fx = e.dir > 0 ? e.x + e.w + 3 : e.x - 3;
+      if (e.grounded && (!solidAt(fx, e.y + e.h + 4) || solidAt(fx, e.y + e.h / 2))) {
+        targetVx = 0; e.pauseTicks = ENEMY_EDGE_PAUSE;
+      }
+    }
+  }
+
+  // im Sprung die Sprungweite halten, am Boden normal laufen
+  const baseVx = e.grounded ? targetVx : (e.airVx ?? targetVx);
+  if (e.grounded) e.airVx = null;
+  e.vx = baseVx + e.knockVx;
+  e.knockVx *= 0.8;
+  if (Math.abs(e.knockVx) < 0.05) e.knockVx = 0;
+  const hitWall = moveWithCollisions(e);
+  // Doppelsprung wie der Spieler: prallt er im Sprung gegen eine Kante, springt er nochmal
+  if (hitWall && !e.grounded && !e.doubleJumped && e.state !== "dead") {
+    e.vy = e.t.jumpForce * 0.85;
+    e.doubleJumped = true;
+  }
+
+  // In einen Abgrund gefallen -> zurueck zum Startpunkt
+  if (e.y > H + 60) {
+    e.x = e.spawnX; e.y = e.spawnY; e.vx = 0; e.vy = 0;
+    e.aggro = false; e.hasAxe = true;
+    if (e.axe) e.axe.removed = true;
+    e.axe = null;
+    setEnemyState(e, "idle");
+  }
+}
+
+function updateAxes() {
+  for (const a of axes) {
+    a.tick++;
+    if (a.state === "fly") {
+      a.vy += AXE_GRAVITY;
+      a.x += a.vx; a.y += a.vy;
+      const hb = { x: a.x - AXE_HITBOX / 2, y: a.y - AXE_HITBOX / 2, w: AXE_HITBOX, h: AXE_HITBOX };
+      if (!a.hitPlayer && !player.inSecretRoom && rectsOverlap(hb, player)) {
+        takeDamage(a.dir);
+        a.hitPlayer = true;
+        a.vx *= -0.25; a.vy = -2;           // prallt am Spieler ab und faellt runter
+      }
+      const tipY = a.y + 10;
+      for (const r of GROUND) {
+        if (!pointInRect(a.x, tipY, r)) continue;
+        if (a.vy > 0 && tipY - a.vy <= r.y + 2) {
+          a.state = "landing"; a.tick = 0; a.groundY = r.y;   // von oben -> steckt im Boden
+          spawnSparks(a.x, r.y, "#c9c2b0", 4);
+        } else {
+          a.vx = -a.vx * 0.3; a.x += a.vx * 3;               // gegen eine Wand -> abprallen
+        }
+        break;
+      }
+      if (a.y > H + 60 || a.x < -60 || a.x > LEVEL_WIDTH + 60) a.removed = true;
+    } else if (a.state === "landing") {
+      if (a.tick >= 5 * AXE_LANDING_TICKS) a.state = "landed";
+    } else if (a.owner.state === "dead") {
+      a.alpha -= 1 / 90;                       // Besitzer tot -> Axt verschwindet langsam
+      if (a.alpha <= 0) a.removed = true;
+    }
+  }
+  axes = axes.filter(a => !a.removed);
+}
+
 // Gibt true zurueck, wenn die Kugel verbraucht ist (Treffer oder Block)
 function hitEnemy(e, b) {
   if (e.state === "dead") return false;
@@ -472,10 +820,17 @@ function hitEnemy(e, b) {
   }
 
   e.hp--;
+  e.flash = 6;
   spawnSparks(b.x, b.y, e.t.hitColor, 4);
   if (e.hp <= 0) {
     setEnemyState(e, "dead");
+    e.knockVx = fromDir * 1.5;
     if (e.t.crumble) spawnDebris(e.x + e.w / 2, e.y + e.h / 2, e.t.hitColor, 14);
+  } else if (e.t.hunter) {
+    // Jaeger hat keine Hurt-Animation: nur Aufblitzen + Rueckstoss, und er ist sofort sauer
+    e.knockVx = fromDir * 1.8;
+    e.aggro = true;
+    if (e.state !== "attack") e.dir = -fromDir;
   } else {
     setEnemyState(e, "hurt");
     e.knockVx = fromDir * 2.2;
@@ -713,6 +1068,7 @@ function update() {
   updateBullets();
   for (const e of enemies) updateEnemy(e);
   enemies = enemies.filter(e => !e.removed);
+  updateAxes();
   updateParticles();
   updateHUD();
 }
@@ -793,29 +1149,96 @@ function draw() {
   const levelY = H - levelImg.naturalHeight;
   ctx.drawImage(levelImg, 0, levelY);
   for (const e of enemies) drawEnemy(e);
+  drawAxes();
   drawParticles();
   drawPlayer(player.x, player.y, 1);
   drawBullets();
   ctx.restore();
 }
 
-function drawEnemy(e) {
-  const a = e.t.anims[e.state];
-  if (!a.img.naturalWidth) { ctx.fillStyle = "#3a8"; ctx.fillRect(e.x, e.y, e.w, e.h); return; }
-  const f = enemyFrame(e);
-  const size = ENEMY_FRAME * ENEMY_SCALE;
-  const dx = Math.round(e.x + e.w / 2 - size / 2);
-  const dy = Math.round(e.y + e.h - ENEMY_FEET_Y * ENEMY_SCALE);
-  ctx.globalAlpha = Math.max(0, e.alpha);
-  if (e.dir > 0) {
-    // Sprites schauen nach links -> fuer rechts horizontal spiegeln
+// Ein Sprite-Frame zeichnen, optional gespiegelt und/oder weiss aufblitzend (Treffer)
+const tintCanvas = document.createElement("canvas");
+const tintCtx = tintCanvas.getContext("2d");
+function drawFrame(img, sx, sy, sw, sh, dx, dy, dw, dh, flip, flash) {
+  let src = img;
+  if (flash) {
+    tintCanvas.width = sw; tintCanvas.height = sh;
+    tintCtx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+    tintCtx.globalCompositeOperation = "source-atop";
+    tintCtx.fillStyle = "rgba(255, 255, 255, 0.75)";
+    tintCtx.fillRect(0, 0, sw, sh);
+    tintCtx.globalCompositeOperation = "source-over";
+    src = tintCanvas; sx = 0; sy = 0;
+  }
+  if (flip) {
     ctx.save();
-    ctx.translate(dx + size, dy);
+    ctx.translate(dx + dw, dy);
     ctx.scale(-1, 1);
-    ctx.drawImage(a.img, f * ENEMY_FRAME, 0, ENEMY_FRAME, ENEMY_FRAME, 0, 0, size, size);
+    ctx.drawImage(src, sx, sy, sw, sh, 0, 0, dw, dh);
     ctx.restore();
   } else {
-    ctx.drawImage(a.img, f * ENEMY_FRAME, 0, ENEMY_FRAME, ENEMY_FRAME, dx, dy, size, size);
+    ctx.drawImage(src, sx, sy, sw, sh, dx, dy, dw, dh);
+  }
+}
+
+function drawEnemy(e) {
+  ctx.globalAlpha = Math.max(0, e.alpha);
+  const flash = e.flash > 0 && e.flash % 2 === 0;
+  if (e.t.hunter) {
+    // in der Luft: Lauf-Frame "eingefroren" als Sprung-Pose
+    const inAir = !e.grounded && !["attack", "throw", "dead"].includes(e.state);
+    const airState = e.hasAxe ? "walk" : "unarmedWalk";
+    const a = inAir ? getAnim(e, airState) : getAnim(e);
+    const f = inAir ? (a.start || 0) + 1 : enemyFrame(e);
+    const fw = a.img.naturalWidth / (a.sheetFrames || a.frames), fh = a.img.naturalHeight;
+    if (fw) {
+      const dx = Math.round(e.x + e.w / 2 - a.anchor * e.S);
+      const dy = Math.round(e.y + e.h - fh * e.S);
+      drawFrame(a.img, f * fw, 0, fw, fh, dx, dy, fw * e.S, fh * e.S, false, flash);
+    }
+  } else {
+    const a = getAnim(e);
+    if (a.img.naturalWidth) {
+      const size = ENEMY_FRAME * e.S;
+      const dx = Math.round(e.x + e.w / 2 - size / 2);
+      const dy = Math.round(e.y + e.h - ENEMY_FEET_Y * e.S);
+      // Sprites schauen nach links -> fuer rechts horizontal spiegeln
+      drawFrame(a.img, enemyFrame(e) * ENEMY_FRAME, 0, ENEMY_FRAME, ENEMY_FRAME, dx, dy, size, size, e.dir > 0, flash);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // Lebensbalken, sobald der Gegner verletzt ist
+  if (e.state !== "dead" && e.hp < e.maxHp) {
+    const bw = 26, bx = Math.round(e.x + e.w / 2 - bw / 2), by = Math.round(e.y - 10);
+    ctx.fillStyle = "rgba(10, 10, 12, 0.75)"; ctx.fillRect(bx - 1, by - 1, bw + 2, 5);
+    ctx.fillStyle = "#e8453c"; ctx.fillRect(bx, by, Math.round(bw * e.hp / e.maxHp), 3);
+  }
+}
+
+function drawAxes() {
+  const S = AXE_SCALE;
+  for (const a of axes) {
+    const set = THROWN_AXE[a.dir > 0 ? "r" : "l"];
+    ctx.globalAlpha = Math.max(0, a.alpha);
+    if (a.state === "fly") {
+      const sh = set.thrown, fw = sh.img.naturalWidth / sh.frames, fh = sh.img.naturalHeight;
+      const f = Math.floor(a.tick / AXE_SPIN_TICKS) % sh.frames;
+      if (fw) ctx.drawImage(sh.img, f * fw, 0, fw, fh,
+        Math.round(a.x - fw * S / 2), Math.round(a.y - fh * S / 2), fw * S, fh * S);
+    } else {
+      // steckt im Boden: Klinge 1px in die Plattform, mittig um a.x
+      const lw = set.landed.naturalWidth, lh = set.landed.naturalHeight;
+      const lx = Math.round(a.x - lw * S / 2), ly = Math.round(a.groundY + S - lh * S);
+      if (a.state === "landing") {
+        const sh = set.landing, fw = sh.img.naturalWidth / sh.frames, fh = sh.img.naturalHeight;
+        const f = Math.min(sh.frames - 1, Math.floor(a.tick / AXE_LANDING_TICKS));
+        if (fw) ctx.drawImage(sh.img, f * fw, 0, fw, fh,
+          lx - set.landedOff[0] * S, ly - set.landedOff[1] * S, fw * S, fh * S);
+      } else if (lw) {
+        ctx.drawImage(set.landed, lx, ly, lw * S, lh * S);
+      }
+    }
   }
   ctx.globalAlpha = 1;
 }

@@ -14,9 +14,9 @@ const SECRET_TRIGGER_RAW = [798, 46, 132, 100];
 // y = Oberkante der Plattform (beides in level.png-Koordinaten). Die passende
 // Plattform wird automatisch gesucht, der Gegner patrouilliert genau auf deren Breite.
 const ENEMY_SPAWNS = [
-  { type: "zombie",         x: 620,  y: 418 }, // breite Plattform in der Mitte (x 450–702)
-  { type: "skeleton",       x: 256,  y: 274 }, // schwebende Plattform links (x 210–302)
-  { type: "skeletonShield", x: 1150, y: 274 }, // grosse Plattform ganz rechts (x 994–1278)
+  { type: "bigZombie",      x: 620,  y: 418 }, // breite Plattform in der Mitte (x 450–702)
+  { type: "smallZombie",    x: 256,  y: 274 }, // schwebende Plattform links (x 210–302)
+  { type: "smallZombie",    x: 1150, y: 274 }, // grosse Plattform ganz rechts (x 994–1278)
   { type: "axeZombie",      x: 880,  y: 402 }, // Plattform mit den Baeumen (x 786–958), jagt den Spieler
 ];
 
@@ -94,7 +94,21 @@ const ENEMY_FRAME = 64, ENEMY_FEET_Y = 48;
 // Tipp: 2 ergibt die schaerfsten Pixel (ganzzahlig), ist aber deutlich groesser.
 const ENEMY_SCALE = 1.5;
 
-function anim(path, frames, ticks, loop) { return { img: loadImg(path), frames, ticks, loop }; }
+// Bilder werden erst geladen, wenn ein Gegnertyp wirklich in ENEMY_SPAWNS
+// vorkommt (siehe loadEnemyAssets). Nicht benutzte Typen brauchen keine PNGs.
+function anim(path, frames, ticks, loop) { return { path, img: null, frames, ticks, loop }; }
+
+// Fuer eng zugeschnittene Sheets mit eigener Datei pro Blickrichtung
+// (Side = rechts, Side-left = links). anchor = x-Position des Kopfes im ersten
+// Frame (Sprite-Pixel); daran wird das Sprite ueber der Hitbox ausgerichtet.
+// mirror: true -> es gibt nur das linke Sheet, rechts wird es gespiegelt.
+function dirAnim(prefix, name, frames, ticks, loop, anchorR, anchorL, mirror = false) {
+  const left = { path: `${prefix}Side-left_${name}-Sheet${frames}.png`, img: null, frames, ticks, loop, anchor: anchorL };
+  const right = mirror
+    ? { ...left, mirror: true }
+    : { path: `${prefix}Side_${name}-Sheet${frames}.png`, img: null, frames, ticks, loop, anchor: anchorR };
+  return { r: right, l: left };
+}
 const Z = "assets/enemies/zombie/";
 const SK = "assets/enemies/skeleton/";
 
@@ -163,8 +177,8 @@ const ENEMY_TYPES = {
 const AXE = "assets/enemies/zombie-axe/";
 function axeAnim(name, frames, ticks, loop, anchorR, anchorL) {
   return {
-    r: { img: loadImg(`${AXE}Zombie_Axe_Side_${name}-Sheet${frames}.png`), frames, ticks, loop, anchor: anchorR },
-    l: { img: loadImg(`${AXE}Zombie_Axe_Side-left_${name}-Sheet${frames}.png`), frames, ticks, loop, anchor: anchorL },
+    r: { path: `${AXE}Zombie_Axe_Side_${name}-Sheet${frames}.png`, img: null, frames, ticks, loop, anchor: anchorR },
+    l: { path: `${AXE}Zombie_Axe_Side-left_${name}-Sheet${frames}.png`, img: null, frames, ticks, loop, anchor: anchorL },
   };
 }
 const axeWalk = axeAnim("Walk", 8, 8, true, 11.5, 8.5);
@@ -179,7 +193,8 @@ function subAnim(src, start, frames, ticks, loop, anchorR, anchorL) {
   };
 }
 ENEMY_TYPES.axeZombie = {
-  hunter: true,   // eigene Physik: Schwerkraft, springt, verlaesst seine Plattform
+  hunter: true,
+  directional: true,   // eigene Physik: Schwerkraft, springt, verlaesst seine Plattform
   scale: 3,       // ganzzahlig -> scharfe Pixel, ca. 54px hoch (andere Gegner ~46px)
   anims: {
     idle: axeAnim("Idle", 6, 10, true, 11.7, 9.3),
@@ -227,6 +242,60 @@ const AXE_SPEED = 5;           // horizontale Fluggeschwindigkeit
 const AXE_GRAVITY = 0.2;       // Bogen
 const AXE_SPIN_TICKS = 3, AXE_LANDING_TICKS = 4;
 const AXE_HITBOX = 22;
+
+// --- Grosser Zombie: langsamer Tank auf der mittleren Plattform ---------
+// Schlag (First-Attack) im Nahkampf, Boden-Stampfer (Second-Attack) mit
+// Schockwelle: trifft alle, die auf seiner Plattform am Boden stehen ->
+// hochspringen zum Ausweichen. Zwei Tode (normal / blutig), zufaellig.
+const BIG = "assets/enemies/zombie-big/Zombie_Big_";
+ENEMY_TYPES.bigZombie = {
+  directional: true,
+  scale: 3,          // ca. 66px hoch
+  anims: {
+    idle: dirAnim(BIG, "Idle", 6, 10, true, 8, 7),
+    walk: dirAnim(BIG, "Walk", 8, 9, true, 8, 7),
+    chase: dirAnim(BIG, "Walk", 8, 6, true, 8, 7),
+    attack: dirAnim(BIG, "First-Attack", 8, 5, false, 9, 13),
+    slam: dirAnim(BIG, "Second-Attack", 15, 4, false, 7, 22),
+    dead: dirAnim(BIG, "First-Death", 7, 8, false, 9, 19),
+    dead2: dirAnim(BIG, "Second-Death", 8, 8, false, 9, 19),
+  },
+  deathAnims: ["dead", "dead2"],
+  w: 12, h: 21, hp: 10,
+  patrolSpeed: 0.4, chaseSpeed: 0.75, aggroRange: 150,
+  attackGap: 3, attackReach: 9, attackHitFrame: 3, attackCooldown: 55,
+  slam: { hitFrame: 3, range: 90, cooldown: 170, chance: 0.35 },
+  hitColor: "#8a2b35", shield: false, crumble: false,
+};
+
+// --- Kleiner Zombie: schnell, wenig Leben ------------------------------
+// Fuer Idle/Attack/First-Death gibt es nur Side-left -> rechts gespiegelt.
+const SMALL = "assets/enemies/zombie-small/Zombie_Small_";
+ENEMY_TYPES.smallZombie = {
+  directional: true,
+  scale: 2,          // ca. 30px hoch, etwas kleiner als der Spieler
+  anims: {
+    idle: dirAnim(SMALL, "Idle", 6, 9, true, 0, 4.4, true),
+    walk: dirAnim(SMALL, "Walk", 6, 7, true, 0, 6.5, true),
+    chase: dirAnim(SMALL, "Walk", 6, 4, true, 0, 6.5, true),
+    attack: dirAnim(SMALL, "First-Attack", 4, 6, false, 0, 5.3, true),
+    dead: dirAnim(SMALL, "First-Death", 6, 7, false, 0, 9.5, true),
+    dead2: dirAnim(SMALL, "Second-Death", 7, 7, false, 0, 8.3, true),
+  },
+  deathAnims: ["dead", "dead2"],
+  w: 8, h: 13, hp: 2,
+  patrolSpeed: 0.8, chaseSpeed: 1.9, aggroRange: 150,
+  attackGap: 2, attackReach: 7, attackHitFrame: 2, attackCooldown: 35,
+  hitColor: "#8a2b35", shield: false, crumble: false,
+};
+
+// Nur die Bilder der Gegnertypen laden, die im Level vorkommen
+function loadEnemyAssets(obj) {
+  if (!obj || typeof obj !== "object" || obj instanceof Image) return;
+  if (obj.path && !obj.img) obj.img = loadImg(obj.path);
+  for (const v of Object.values(obj)) loadEnemyAssets(v);
+}
+for (const type of new Set(ENEMY_SPAWNS.map(sp => sp.type))) loadEnemyAssets(ENEMY_TYPES[type]?.anims);
 
 const ENEMY_EDGE_PAUSE = 50; // kurz stehen bleiben an der Plattformkante
 
@@ -305,6 +374,7 @@ const SECRET_RIGHT = 217;
 const SECRET_OPENING = { xMin: 108, xMax: 147 };
 
 let cameraX = 0;
+let shakeTicks = 0; // Bildschirm-Wackeln (z. B. beim Boden-Stampfer)
 let gameOver = false;
 let jumpKeyWasDown = false;
 
@@ -427,6 +497,7 @@ function createEnemy(spawn) {
     vx: 0, vy: 0, grounded: true, aggro: false, jumpCooldown: 0,
     flash: 0, maxHp: t.hp,
     hasAxe: true, axe: null, throwCooldown: 60, unarmedTicks: 0, released: false,
+    slamCooldown: 60, deathAnim: "dead",
     x: spawn.x - w / 2, y: plat.y - h, w, h,
     plat,
     minX: plat.x + 4, maxX: plat.x + plat.w - w - 4,
@@ -447,8 +518,8 @@ function setEnemyState(e, state) {
   if (e.state !== state) { e.state = state; e.animTick = 0; e.hitDone = false; }
 }
 function getAnim(e, state = e.state) {
-  const a = e.t.anims[state];
-  return e.t.hunter ? a[e.dir > 0 ? "r" : "l"] : a;
+  const a = e.t.anims[state === "dead" ? e.deathAnim : state];
+  return e.t.directional ? a[e.dir > 0 ? "r" : "l"] : a;
 }
 function enemyFrame(e) {
   const a = getAnim(e);
@@ -480,6 +551,7 @@ function updateEnemy(e) {
     return;
   }
   if (e.attackCooldown > 0) e.attackCooldown--;
+  if (e.slamCooldown > 0) e.slamCooldown--;
 
   // Rueckstoss (Treffer oder Schild-Block) laeuft unabhaengig vom Zustand aus
   if (e.knockVx) {
@@ -514,14 +586,35 @@ function updateEnemy(e) {
     return;
   }
 
+  if (e.state === "slam") {
+    // Boden-Stampfer: Schockwelle trifft, wer auf der Plattform am Boden steht
+    if (enemyFrame(e) >= t.slam.hitFrame && !e.hitDone) {
+      e.hitDone = true;
+      const groundY = e.plat.y;
+      shakeTicks = 12;
+      for (const side of [-1, 1]) spawnDust(e.x + e.w / 2 + side * e.w / 2, groundY, side);
+      const onGround = player.grounded && Math.abs(playerBottom - groundY) < 3;
+      if (onGround && Math.abs(dx) < t.slam.range + player.w / 2) takeDamage(dx >= 0 ? 1 : -1);
+    }
+    if (enemyAnimDone(e)) {
+      e.slamCooldown = t.slam.cooldown; e.attackCooldown = t.attackCooldown;
+      setEnemyState(e, "idle");
+    }
+    return;
+  }
+
   // Verfolgen, wenn der Spieler auf seiner Plattform ist
   if (playerNear && Math.abs(dx) < t.aggroRange) {
     e.dir = dx >= 0 ? 1 : -1;
     e.pauseTicks = 0;
+    const slamReady = t.slam && e.slamCooldown === 0 && e.attackCooldown === 0;
     if (gap < t.attackGap * S) {
-      setEnemyState(e, e.attackCooldown === 0 ? "attack" : "idle");
+      if (slamReady && Math.random() < t.slam.chance) setEnemyState(e, "slam");
+      else setEnemyState(e, e.attackCooldown === 0 ? "attack" : "idle");
       return;
     }
+    // Spieler etwas weiter weg, aber in Reichweite der Schockwelle
+    if (slamReady && gap < t.slam.range * 0.6) { setEnemyState(e, "slam"); return; }
     const before = e.x;
     e.x += e.dir * t.chaseSpeed;
     clampToPlatform(e);
@@ -823,6 +916,8 @@ function hitEnemy(e, b) {
   e.flash = 6;
   spawnSparks(b.x, b.y, e.t.hitColor, 4);
   if (e.hp <= 0) {
+    const deaths = e.t.deathAnims || ["dead"];
+    e.deathAnim = deaths[Math.floor(Math.random() * deaths.length)];
     setEnemyState(e, "dead");
     e.knockVx = fromDir * 1.5;
     if (e.t.crumble) spawnDebris(e.x + e.w / 2, e.y + e.h / 2, e.t.hitColor, 14);
@@ -831,6 +926,10 @@ function hitEnemy(e, b) {
     e.knockVx = fromDir * 1.8;
     e.aggro = true;
     if (e.state !== "attack") e.dir = -fromDir;
+  } else if (!e.t.anims.hurt) {
+    // keine Hurt-Animation: Aufblitzen + Rueckstoss, Angriffe laufen weiter
+    e.knockVx = fromDir * (e.t.hp >= 8 ? 0.8 : 2.2);   // der Grosse wankt kaum
+    if (!["attack", "slam"].includes(e.state)) e.dir = -fromDir;
   } else {
     setEnemyState(e, "hurt");
     e.knockVx = fromDir * 2.2;
@@ -967,6 +1066,18 @@ function spawnSparks(x, y, color, n) {
       type: "spark", color, x, y,
       vx: (Math.random() - 0.5) * 3, vy: (Math.random() - 0.8) * 2.5,
       life: 10 + Math.random() * 6, maxLife: 16,
+    });
+  }
+}
+
+// Staubwolke der Schockwelle, rollt am Boden entlang nach aussen
+function spawnDust(x, groundY, dir) {
+  for (let i = 0; i < 10; i++) {
+    particles.push({
+      type: "spark", color: i % 2 ? "#c9c2b0" : "#8f8878",
+      x: x + dir * i * 6, y: groundY - 2 - Math.random() * 6,
+      vx: dir * (1.5 + Math.random() * 2.5), vy: -Math.random() * 1.2,
+      life: 14 + Math.random() * 10, maxLife: 24,
     });
   }
 }
@@ -1145,7 +1256,13 @@ function draw() {
   fogWash(0.38);
 
   ctx.save();
-  ctx.translate(-Math.round(cameraX), 0);
+  let shakeX = 0, shakeY = 0;
+  if (shakeTicks > 0) {
+    shakeTicks--;
+    shakeX = Math.round((Math.random() - 0.5) * 6);
+    shakeY = Math.round((Math.random() - 0.5) * 4);
+  }
+  ctx.translate(-Math.round(cameraX) + shakeX, shakeY);
   const levelY = H - levelImg.naturalHeight;
   ctx.drawImage(levelImg, 0, levelY);
   for (const e of enemies) drawEnemy(e);
@@ -1184,17 +1301,19 @@ function drawFrame(img, sx, sy, sw, sh, dx, dy, dw, dh, flip, flash) {
 function drawEnemy(e) {
   ctx.globalAlpha = Math.max(0, e.alpha);
   const flash = e.flash > 0 && e.flash % 2 === 0;
-  if (e.t.hunter) {
-    // in der Luft: Lauf-Frame "eingefroren" als Sprung-Pose
-    const inAir = !e.grounded && !["attack", "throw", "dead"].includes(e.state);
+  if (e.t.directional) {
+    // Jaeger in der Luft: Lauf-Frame "eingefroren" als Sprung-Pose
+    const inAir = e.t.hunter && !e.grounded && !["attack", "throw", "dead"].includes(e.state);
     const airState = e.hasAxe ? "walk" : "unarmedWalk";
     const a = inAir ? getAnim(e, airState) : getAnim(e);
     const f = inAir ? (a.start || 0) + 1 : enemyFrame(e);
     const fw = a.img.naturalWidth / (a.sheetFrames || a.frames), fh = a.img.naturalHeight;
     if (fw) {
-      const dx = Math.round(e.x + e.w / 2 - a.anchor * e.S);
+      // gespiegeltes Sheet: Kopf-Anker auf der anderen Seite des Frames
+      const anchor = a.mirror ? fw - 1 - a.anchor : a.anchor;
+      const dx = Math.round(e.x + e.w / 2 - anchor * e.S);
       const dy = Math.round(e.y + e.h - fh * e.S);
-      drawFrame(a.img, f * fw, 0, fw, fh, dx, dy, fw * e.S, fh * e.S, false, flash);
+      drawFrame(a.img, f * fw, 0, fw, fh, dx, dy, fw * e.S, fh * e.S, !!a.mirror, flash);
     }
   } else {
     const a = getAnim(e);

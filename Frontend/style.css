@@ -11,8 +11,16 @@ canvas {
   image-rendering: pixelated; image-rendering: crisp-edges;
   border-radius: 8px; background: #8fd1ea; cursor: crosshair;
 }
-#hud { position: absolute; top: 10px; left: 10px; display: flex; gap: 4px; pointer-events: none; }
-#hud span { font-size: 18px; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.8)); }
+#hud { position: absolute; top: 10px; left: 10px; display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
+#hearts { display: flex; gap: 4px; }
+#hearts span { font-size: 18px; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.8)); }
+#ammo { display: flex; align-items: center; gap: 3px; padding-left: 2px; }
+#ammo img {
+  width: 10px; height: 5px; image-rendering: pixelated;
+  filter: drop-shadow(0 1px 0 rgba(0,0,0,0.9));
+}
+#ammo img.spent { opacity: 0.2; }
+#ammo .reload-label { margin-left: 6px; font-size: 11px; color: #d4d06d; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.9)); }
 #hint {
   position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
   background: rgba(20,20,24,0.72); color: #eee; padding: 6px 14px; border-radius: 8px;

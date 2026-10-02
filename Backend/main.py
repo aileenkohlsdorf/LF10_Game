@@ -1,10 +1,18 @@
 from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 
 from Backend.db import get_connection, init_database
 from Backend.auth import hash_password, verify_password, create_token
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:5500", "http://localhost:5500"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 init_database()
 

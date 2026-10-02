@@ -18,6 +18,9 @@ const ENEMY_SPAWNS = [
   { type: "smallZombie",    x: 256,  y: 274 }, // schwebende Plattform links (x 210–302)
   { type: "smallZombie",    x: 1150, y: 274 }, // grosse Plattform ganz rechts (x 994–1278)
   { type: "axeZombie",      x: 880,  y: 402 }, // Plattform mit den Baeumen (x 786–958), jagt den Spieler
+  { type: "rat",            x: 330,  y: 370 }, // Bodenstueck nach dem Start (x 226–414)
+  { type: "rat",            x: 64,   y: 178 }, // schwebende Plattform ganz oben links (x 18–110)
+  { type: "rat",            x: 880,  y: 258 }, // schwebende Plattform rechts (x 834–926)
 ];
 
 // --- Asset-Loader ---------------------------------------------------
@@ -307,7 +310,8 @@ function vibrantCopy(img) {
   return c;
 }
 
-// Alle Bilder der benutzten Gegnertypen (und der Wurfaxt) austauschen
+// Alle Bilder der benutzten Gegnertypen (und der Wurfaxt) austauschen.
+// Einzelne Typen koennen mit "vibrant: false" ausgenommen werden (z. B. die Ratte).
 function makeEnemiesVibrant() {
   if (ENEMY_SATURATION === 1 && ENEMY_CONTRAST === 1 && ENEMY_HUE_SHIFT === 0) return;
   const done = new Map();
@@ -319,7 +323,10 @@ function makeEnemiesVibrant() {
       else if (!(v instanceof HTMLCanvasElement)) walk(v);
     }
   };
-  for (const type of new Set(ENEMY_SPAWNS.map(sp => sp.type))) walk(ENEMY_TYPES[type]?.anims);
+  for (const type of new Set(ENEMY_SPAWNS.map(sp => sp.type))) {
+    const t = ENEMY_TYPES[type];
+    if (t && t.vibrant !== false) walk(t.anims);   // vibrant: false -> Originalfarben
+  }
   walk(THROWN_AXE);
 }
 
@@ -366,6 +373,33 @@ ENEMY_TYPES.smallZombie = {
   w: 8, h: 13, hp: 2,
   patrolSpeed: 0.8, chaseSpeed: 1.9, aggroRange: 150,
   attackGap: 2, attackReach: 7, attackHitFrame: 2, attackCooldown: 35,
+  hitColor: "#8a2b35", shield: false, crumble: false,
+};
+
+// --- Ratte: klein, flink, wenig Leben ----------------------------------
+// 64x64-Frames wie der alte Zombie (schaut nach links, Fuesse auf y=48).
+// Sniff ist nur 48px hoch (oben abgeschnitten, Fuesse auf y=32).
+// Verhalten: schnueffelt an den Kanten (Sniff), stellt sich kurz auf,
+// wenn sie dich bemerkt (Stand), rennt dann auf dich zu (Run) und beisst.
+const RAT = "assets/enemies/rat/Rat_Gray_";
+ENEMY_TYPES.rat = {
+  scale: 1,          // ca. 12px hoch, 40px lang -> deutlich kleiner als der Rest
+  anims: {
+    idle: anim(`${RAT}Idle.png`, 6, 9, true),
+    walk: anim(`${RAT}Walk.png`, 4, 8, true),
+    chase: anim(`${RAT}Run.png`, 6, 4, true),
+    sniff: { ...anim(`${RAT}Sniff.png`, 6, 8, true), fh: 48, feetY: 32 },
+    alert: anim(`${RAT}Stand.png`, 6, 5, false),
+    attack: anim(`${RAT}Attack.png`, 6, 5, false),
+    hurt: anim(`${RAT}Hurt.png`, 6, 3, false),
+    dead: anim(`${RAT}Dead.png`, 6, 7, false),
+  },
+  vibrant: false,       // Originalfarben, keine kraeftigeren Farben
+  pauseAnim: "sniff",   // statt Idle an den Plattformkanten
+  alertAnim: "alert",   // kurz aufrichten, wenn sie den Spieler bemerkt
+  w: 30, h: 11, hp: 2,
+  patrolSpeed: 0.7, chaseSpeed: 2.2, aggroRange: 160,
+  attackGap: 4, attackReach: 12, attackHitFrame: 3, attackCooldown: 40,
   hitColor: "#8a2b35", shield: false, crumble: false,
 };
 
@@ -684,10 +718,17 @@ function updateEnemy(e) {
     return;
   }
 
+  if (e.state === "alert") {
+    e.dir = dx >= 0 ? 1 : -1;
+    if (enemyAnimDone(e)) setEnemyState(e, "idle");
+    return;
+  }
+
   // Verfolgen, wenn der Spieler auf seiner Plattform ist
   if (playerNear && Math.abs(dx) < t.aggroRange) {
     e.dir = dx >= 0 ? 1 : -1;
     e.pauseTicks = 0;
+    if (t.alertAnim && !e.alerted) { e.alerted = true; setEnemyState(e, t.alertAnim); return; }
     const slamReady = t.slam && e.slamCooldown === 0 && e.attackCooldown === 0;
     if (gap < t.attackGap * S) {
       if (slamReady && Math.random() < t.slam.chance) setEnemyState(e, "slam");
@@ -704,8 +745,9 @@ function updateEnemy(e) {
   }
 
   // Patrouille: hin und her, an jeder Kante kurz warten und umdrehen
+  e.alerted = false;
   if (e.pauseTicks > 0) {
-    setEnemyState(e, "idle");
+    setEnemyState(e, t.pauseAnim || "idle");
     e.pauseTicks--;
     if (e.pauseTicks === 0) e.dir *= -1;
     return;
@@ -1083,10 +1125,18 @@ function fire() {
   const o = gunOrigin(player.x, player.y, 1);
   const mx = o.x + o.cfg.muzzle[0] * o.S;
   const my = o.y + o.cfg.muzzle[1] * o.S;
+  // Von der Muendung aus genau auf den Cursor zielen, damit auch kleine,
+  // flache Gegner (Ratten) getroffen werden. Liegt der Cursor direkt auf der
+  // Muendung oder "hinter" ihr, gilt weiter der normale Zielwinkel.
+  let angle = gun.angle;
+  if (mouse.active) {
+    const tx = mouse.x + cameraX - mx, ty = mouse.y - my;
+    if (Math.hypot(tx, ty) > 6 && Math.cos(Math.atan2(ty, tx) - gun.angle) > 0.5) angle = Math.atan2(ty, tx);
+  }
   bullets.push({
     x: mx, y: my,
-    vx: Math.cos(gun.angle) * BULLET_SPEED, vy: Math.sin(gun.angle) * BULLET_SPEED,
-    angle: gun.angle, dist: 0, dead: false,
+    vx: Math.cos(angle) * BULLET_SPEED, vy: Math.sin(angle) * BULLET_SPEED,
+    angle, dist: 0, dead: false,
   });
   // Huelse fliegt nach hinten-oben raus
   particles.push({
@@ -1408,11 +1458,12 @@ function drawEnemy(e) {
   } else {
     const a = getAnim(e);
     if (a.img.naturalWidth) {
-      const size = ENEMY_FRAME * e.S;
-      const dx = Math.round(e.x + e.w / 2 - size / 2);
-      const dy = Math.round(e.y + e.h - ENEMY_FEET_Y * e.S);
+      // Standard 64x64, Fuesse auf y=48 -- einzelne Sheets koennen abweichen (fh/feetY)
+      const fw = a.fw || ENEMY_FRAME, fh = a.fh || ENEMY_FRAME, feet = a.feetY || ENEMY_FEET_Y;
+      const dx = Math.round(e.x + e.w / 2 - fw * e.S / 2);
+      const dy = Math.round(e.y + e.h - feet * e.S);
       // Sprites schauen nach links -> fuer rechts horizontal spiegeln
-      drawFrame(a.img, enemyFrame(e) * ENEMY_FRAME, 0, ENEMY_FRAME, ENEMY_FRAME, dx, dy, size, size, e.dir > 0, flash);
+      drawFrame(a.img, enemyFrame(e) * fw, 0, fw, fh, dx, dy, fw * e.S, fh * e.S, e.dir > 0, flash);
     }
   }
   ctx.globalAlpha = 1;

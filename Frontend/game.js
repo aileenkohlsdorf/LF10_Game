@@ -24,13 +24,17 @@ const ENEMY_SPAWNS = [
 ];
 
 // --- Asset-Loader ---------------------------------------------------
+// Im Prototyp (eine einzelne HTML-Datei) liegen alle Bilder als data-URIs in
+// window.ASSET_MAP. Im normalen Projekt ist die Map leer -> echte Dateipfade.
+const ASSET_MAP = window.ASSET_MAP || {};
+function asset(path) { return ASSET_MAP[path] || path; }
 const allImages = [];
 let ready = 0;
 function loadImg(src) {
   const img = new Image();
   img.onload = onReady;
   img.onerror = () => { console.warn("Bild nicht gefunden:", src); onReady(); };
-  img.src = src;
+  img.src = asset(src);
   allImages.push(img);
   return img;
 }
@@ -418,11 +422,10 @@ const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 ctx.imageSmoothingEnabled = false;
 const stage = document.getElementById("stage");
-const focusNotice = document.getElementById("focusNotice");
-focusNotice.addEventListener("click", () => { stage.focus(); focusNotice.style.display = "none"; });
-stage.addEventListener("blur", () => { focusNotice.style.display = "flex"; });
-stage.addEventListener("click", () => stage.focus());
-stage.focus();
+// Klickt man waehrend des Spiels neben das Spiel (Fokus weg), pausiert es.
+stage.addEventListener("blur", () => { if (gameState === "playing") pauseGame(); });
+// Klicks auf Menues/Eingabefelder duerfen den Fokus nicht wegnehmen
+stage.addEventListener("click", (e) => { if (!e.target.closest(".screen")) stage.focus(); });
 
 const W = canvas.width, H = canvas.height;
 const GRAVITY = 0.6;
@@ -497,7 +500,10 @@ let jumpKeyWasDown = false;
 const keys = {};
 const controlKeys = new Set([" ", "arrowup", "arrowdown", "arrowleft", "arrowright", "w", "a", "s", "d", "r"]);
 stage.addEventListener("keydown", (e) => {
+  if (e.target.matches("input")) return; // Tippen im Login-Formular ist keine Spielsteuerung
   const k = e.key.toLowerCase();
+  if (k === "escape" || k === "p") { e.preventDefault(); onPauseKey(); return; }
+  if (gameState !== "playing") return; // in Menues normale Tastenbedienung (Tab, Enter, Leertaste)
   keys[k] = true;
   if (controlKeys.has(k)) e.preventDefault();
 });
@@ -516,7 +522,7 @@ function updateMousePos(e) {
 stage.addEventListener("mousemove", (e) => { updateMousePos(e); mouse.moved = true; });
 stage.addEventListener("mousedown", (e) => {
   if (e.button !== 0) return;
-  if (e.target.closest("#message") || e.target === focusNotice) return;
+  if (e.target.closest(".screen")) return; // Klick in ein Menue = kein Schuss
   stage.focus();
   updateMousePos(e);
   mouse.down = true;
@@ -525,7 +531,6 @@ stage.addEventListener("mousedown", (e) => {
 window.addEventListener("mouseup", (e) => { if (e.button === 0) mouse.down = false; });
 stage.addEventListener("blur", () => { mouse.down = false; });
 
-setTimeout(() => { document.getElementById("hint").style.opacity = "0"; }, 6000);
 
 function rectsOverlap(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
@@ -561,14 +566,9 @@ function takeDamage(knockDir) {
   if (player.lives <= 0) triggerGameOver();
 }
 
-function triggerGameOver() { gameOver = true; showMessage("Game Over – keine Leben mehr."); }
-function showMessage(text) {
-  document.getElementById("message-text").textContent = text;
-  document.getElementById("message").style.display = "block";
-}
-document.getElementById("message-btn").addEventListener("click", restart);
+function triggerGameOver() { gameOver = true; showScreen("gameover"); }
+// Setzt Spieler, Waffe und Gegner auf den Levelanfang zurueck
 function restart() {
-  document.getElementById("message").style.display = "none";
   player.x = 24; player.y = GROUND[0].y - player.h;
   player.vx = 0; player.vy = 0; player.lives = 5; player.invulnFrames = 90;
   player.inSecretRoom = false; player.jumpsUsed = 0;
@@ -576,7 +576,6 @@ function restart() {
   bullets = []; particles = [];
   spawnEnemies();
   gameOver = false;
-  stage.focus();
 }
 
 function enterSecretRoom() {
@@ -1256,7 +1255,7 @@ function updateParticles() {
 // UPDATE
 // =====================================================================
 function update() {
-  if (gameOver || !assetsReady()) return;
+  if (gameState !== "playing" || gameOver || !assetsReady()) return;
   if (player.invulnFrames > 0) player.invulnFrames--;
 
   if (player.inSecretRoom) {
@@ -1324,36 +1323,53 @@ function update() {
   updateHUD();
 }
 
-// --- HUD: Herzen + Munition (nur neu bauen, wenn sich etwas aendert) ---
+// --- HUD: Leben + Munition (nur neu zeichnen, wenn sich etwas aendert) ---
+// "bar" = Lebensbalken mit Herz, "hearts" = ein Herz pro Leben
+const HEALTH_STYLE = "bar";
+const UI = "assets/ui/";
+const hudEl = document.getElementById("hud");
+const hpBarEl = document.getElementById("hp-bar");
+const hpFillEl = document.getElementById("hp-fill");
 const hudHearts = document.getElementById("hearts");
 const hudAmmo = document.getElementById("ammo");
+const reloadLabel = document.getElementById("reload-label");
+hpBarEl.hidden = HEALTH_STYLE !== "bar";
+hudHearts.hidden = HEALTH_STYLE !== "hearts";
 const ammoIcons = [];
 for (let i = 0; i < MAG_SIZE; i++) {
   const img = document.createElement("img");
-  img.src = `${BULLET_PATH}Pistol-bullet_Whole.png`;
   img.alt = "";
   hudAmmo.appendChild(img);
   ammoIcons.push(img);
 }
-const reloadLabel = document.createElement("span");
-reloadLabel.className = "reload-label";
-reloadLabel.textContent = "Nachladen …";
-hudAmmo.appendChild(reloadLabel);
 
-let lastHudKey = "";
+let lastHudKey = "", lastHudLives = null;
 function updateHUD() {
   const key = `${player.lives}|${gun.ammo}|${gun.state === "reload"}`;
   if (key === lastHudKey) return;
   lastHudKey = key;
-  hudHearts.innerHTML = "";
-  for (let i = 0; i < player.maxLives; i++) {
-    const span = document.createElement("span");
-    span.textContent = i < player.lives ? "♥" : "♡";
-    span.style.color = i < player.lives ? "#e8453c" : "rgba(255,255,255,0.4)";
-    hudHearts.appendChild(span);
+  const lives = Math.max(0, player.lives);
+  if (lastHudLives !== null && lives < lastHudLives) {
+    // kurzer Ruck, wenn man Schaden nimmt
+    hudEl.classList.remove("hurt"); void hudEl.offsetWidth; hudEl.classList.add("hurt");
   }
-  ammoIcons.forEach((img, i) => img.classList.toggle("spent", i >= gun.ammo));
-  reloadLabel.style.visibility = gun.state === "reload" ? "visible" : "hidden";
+  lastHudLives = lives;
+  hpFillEl.style.width = `${(lives / player.maxLives) * 100}%`;
+  hpBarEl.setAttribute("aria-label", `Leben: ${lives} von ${player.maxLives}`);
+  if (HEALTH_STYLE === "hearts") {
+    hudHearts.innerHTML = "";
+    for (let i = 0; i < player.maxLives; i++) {
+      const img = document.createElement("img");
+      img.src = asset(UI + (i < lives ? "Heart_Full.png" : "Heart_Empty.png"));
+      img.alt = "";
+      hudHearts.appendChild(img);
+    }
+  }
+  ammoIcons.forEach((img, i) => {
+    img.src = asset(UI + (i < gun.ammo ? "Pistol-Bullet.png" : "Pistol-Bullet_Empty.png"));
+  });
+  hudAmmo.setAttribute("aria-label", `Munition: ${gun.ammo} von ${MAG_SIZE}`);
+  reloadLabel.hidden = gun.state !== "reload";
 }
 
 // =====================================================================
@@ -1597,7 +1613,306 @@ function loop(t) {
   animTimer += t - lastT;
   lastT = t;
   update();
+  if (gameState === "auth" || gameState === "menu") menuCamera(t);
   draw();
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
+
+// =====================================================================
+// UI: Login/Registrieren, Hauptmenue, Pause, Game Over
+// =====================================================================
+// Spielzustaende: "auth" -> "menu" -> "playing" <-> "paused", "gameover"
+let gameState = "auth";
+
+// --- Backend ----------------------------------------------------------
+// Adresse des FastAPI-Servers (uvicorn startet standardmaessig auf Port 8000)
+const API_BASE = "http://127.0.0.1:8000";
+// Der Prototyp im Chat kann keinen lokalen Server erreichen und benutzt
+// darum ein nachgebautes Backend im Browser (window.USE_MOCK_API = true).
+const USE_MOCK_API = window.USE_MOCK_API === true;
+
+class ApiError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+
+async function api(path, { method = "GET", body, auth = false } = {}) {
+  if (USE_MOCK_API) return mockApi(path, method, body, auth ? session.token : null);
+  const headers = {};
+  if (body) headers["Content-Type"] = "application/json";
+  if (auth && session.token) headers["token"] = session.token; // Backend erwartet Header "token"
+  let res;
+  try {
+    res = await fetch(API_BASE + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  } catch {
+    throw new ApiError(0, "Server nicht erreichbar. Läuft das Backend?");
+  }
+  let data = {};
+  try { data = await res.json(); } catch { /* leere Antwort */ }
+  if (!res.ok) {
+    // FastAPI: detail ist ein Text (HTTPException) oder eine Liste (Validierungsfehler)
+    const msg = typeof data.detail === "string" ? data.detail : "Eingabe wurde vom Server abgelehnt.";
+    throw new ApiError(res.status, msg);
+  }
+  return data;
+}
+
+// Nachbau der Backend-Antworten, nur fuer den Prototyp (Daten bleiben im Browser)
+function mockApi(path, method, body, token) {
+  const load = (k) => { try { return JSON.parse(localStorage.getItem(k)) || {}; } catch { return {}; } };
+  const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* egal */ } };
+  const users = load("mock_users"), sessions = load("mock_sessions");
+  return new Promise((resolve, reject) => setTimeout(() => {
+    if (path === "/auth/register") {
+      if (users[body.username]) return reject(new ApiError(400, "Username ist bereits vergeben."));
+      users[body.username] = body.password; store("mock_users", users);
+      return resolve({ message: "Account erfolgreich erstellt." });
+    }
+    if (path === "/auth/login") {
+      if (users[body.username] !== body.password) return reject(new ApiError(401, "Username oder Passwort ist falsch."));
+      const t = Math.random().toString(36).slice(2);
+      sessions[t] = body.username; store("mock_sessions", sessions);
+      return resolve({ message: "Login erfolgreich!", token: t });
+    }
+    if (path === "/users/me") {
+      if (!sessions[token]) return reject(new ApiError(401, "Ungültiger Token."));
+      return resolve({ id: 1, username: sessions[token] });
+    }
+    if (path === "/auth/logout") {
+      delete sessions[token]; store("mock_sessions", sessions);
+      return resolve({ message: "Logout erfolgreich!" });
+    }
+    reject(new ApiError(404, "Not Found"));
+  }, 350));
+}
+
+// --- Sitzung (Token merken) --------------------------------------------
+const TOKEN_KEY = "zombie_token";
+const session = { token: null, username: null, guest: false };
+function saveToken(token, remember) {
+  try {
+    localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY);
+    (remember ? localStorage : sessionStorage).setItem(TOKEN_KEY, token);
+  } catch { /* Speicher gesperrt: dann eben nur fuer diese Sitzung */ }
+}
+function readToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+function clearToken() {
+  try { localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); } catch { /* egal */ }
+}
+
+// --- Sprites fuer das UI an CSS uebergeben ------------------------------
+// (als CSS-Variablen, damit es im Projekt und im Prototyp gleich funktioniert)
+const UI_SPRITES = {
+  "panel": "Inventory_1.png",
+  "blank-up": "Blank_Not-Pressed.png", "blank-down": "Blank_Pressed.png",
+  "play-up": "Play_Not-Pressed.png", "play-down": "Play_Pressed.png",
+  "quit-up": "Quit_Not-Pressed.png", "quit-down": "Quit_Pressed.png",
+  "yes-up": "Button_Yes_Not-Pressed.png", "yes-down": "Button_Yes_Pressed.png",
+  "no-up": "Button_No_Not-Pressed.png", "no-down": "Button_No_Pressed.png",
+  "check-body": "Checkmark-Body.png", "check-anim": "Checkmark-Sheet5.png",
+  "hp-frame": "HP-Bar.png", "hp-fill": "HP.png",
+};
+const rootStyle = document.documentElement.style;
+for (const [name, file] of Object.entries(UI_SPRITES)) {
+  rootStyle.setProperty(`--img-${name}`, `url("${asset(UI + file)}")`);
+}
+// Pixel-Mauszeiger fuer die Menues: Cursor.png 3x vergroessert
+const cursorImg = new Image();
+cursorImg.onload = () => {
+  const c = document.createElement("canvas");
+  c.width = cursorImg.width * 3; c.height = cursorImg.height * 3;
+  const cx = c.getContext("2d");
+  cx.imageSmoothingEnabled = false;
+  cx.drawImage(cursorImg, 0, 0, c.width, c.height);
+  try { rootStyle.setProperty("--menu-cursor", `url("${c.toDataURL()}") 0 0, default`); } catch { /* Standard-Zeiger */ }
+};
+cursorImg.src = asset(UI + "Cursor.png");
+
+// --- UI-Ebene an die Spielgroesse anpassen -----------------------------
+// Das UI ist fuer 480x270 "UI-Pixel" gebaut (halbe Canvas-Aufloesung)
+// und wird als Ganzes hochskaliert -> Pixel-Art bleibt im Verhaeltnis.
+const uiEl = document.getElementById("ui");
+function fitUI() { uiEl.style.transform = `scale(${stage.clientWidth / 480})`; }
+new ResizeObserver(fitUI).observe(stage);
+fitUI();
+
+// --- Bildschirme umschalten --------------------------------------------
+const screens = {};
+document.querySelectorAll(".screen").forEach(el => { screens[el.dataset.screen] = el; });
+const hintEl = document.getElementById("hint");
+let hintTimer = null;
+
+function showScreen(name) {
+  gameState = name === "pause" ? "paused" : name === "none" ? "playing" : name;
+  for (const [key, el] of Object.entries(screens)) el.hidden = key !== name;
+  hudEl.hidden = !(gameState === "playing" || gameState === "paused");
+  stage.classList.toggle("in-menu", gameState !== "playing");
+  if (gameState !== "playing") hintEl.classList.remove("show");
+  if (gameState !== "playing") { mouse.down = false; shotQueued = false; for (const k in keys) keys[k] = false; }
+  const el = screens[name];
+  if (el) {
+    el.querySelectorAll(".confirm").forEach(c => { c.hidden = true; });
+    el.querySelectorAll(".menu-main").forEach(c => { c.hidden = false; });
+    const first = el.querySelector("[data-autofocus]:not([hidden] *)");
+    if (first) first.focus({ preventScroll: true });
+  }
+}
+
+function startGame() {
+  restart();
+  lastHudKey = ""; lastHudLives = null;
+  updateHUD();
+  showScreen("none");
+  stage.focus();
+  hintEl.classList.add("show");
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => hintEl.classList.remove("show"), 6000);
+}
+function pauseGame() { if (gameState === "playing") showScreen("pause"); }
+function resumeGame() { showScreen("none"); stage.focus(); }
+
+function onPauseKey() {
+  if (gameState === "playing") return pauseGame();
+  if (gameState !== "paused") return;
+  const confirmBox = screens.pause.querySelector(".confirm");
+  if (!confirmBox.hidden) return closeConfirm(screens.pause);
+  resumeGame();
+}
+
+// Ja/Nein-Abfrage innerhalb eines Panels
+function openConfirm(screenEl) {
+  screenEl.querySelector(".menu-main").hidden = true;
+  const box = screenEl.querySelector(".confirm");
+  box.hidden = false;
+  box.querySelector(".btn-no").focus({ preventScroll: true });
+}
+function closeConfirm(screenEl) {
+  screenEl.querySelector(".confirm").hidden = true;
+  screenEl.querySelector(".menu-main").hidden = false;
+  screenEl.querySelector("[data-autofocus]").focus({ preventScroll: true });
+}
+
+// Im Menue faehrt die Kamera langsam uebers Level
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+function menuCamera(t) {
+  const range = Math.max(0, LEVEL_WIDTH - W);
+  cameraX = reduceMotion ? range / 2 : range * (0.5 - 0.5 * Math.cos(t / 18000));
+}
+
+// --- Login / Registrieren ----------------------------------------------
+const authForm = document.getElementById("auth-form");
+const authTabs = document.querySelectorAll(".tab");
+const authError = document.getElementById("auth-error");
+const authSubmit = document.getElementById("auth-submit");
+const userInput = document.getElementById("auth-user");
+const passInput = document.getElementById("auth-pass");
+const pass2Input = document.getElementById("auth-pass2");
+const pass2Field = document.getElementById("field-pass2");
+const rememberInput = document.getElementById("auth-remember");
+let authMode = "login";
+
+function setAuthMode(mode) {
+  authMode = mode;
+  authTabs.forEach(t => t.setAttribute("aria-selected", String(t.dataset.mode === mode)));
+  pass2Field.hidden = mode !== "register";
+  passInput.autocomplete = mode === "register" ? "new-password" : "current-password";
+  authSubmit.querySelector("span").textContent = mode === "register" ? "Registrieren" : "Anmelden";
+  setAuthMessage("");
+}
+function setAuthMessage(text, kind = "error") {
+  authError.textContent = text;
+  authError.dataset.kind = kind;
+}
+authTabs.forEach(t => t.addEventListener("click", () => { setAuthMode(t.dataset.mode); userInput.focus(); }));
+
+function validate(username, password, password2) {
+  if (!username) return "Gib einen Benutzernamen ein.";
+  if (!password) return "Gib ein Passwort ein.";
+  if (authMode === "register") {
+    if (username.length < 3 || username.length > 16) return "Benutzername: 3 bis 16 Zeichen.";
+    if (password.length < 4) return "Passwort: mindestens 4 Zeichen.";
+    if (password !== password2) return "Die Passwörter stimmen nicht überein.";
+  }
+  return null;
+}
+
+authForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (authSubmit.disabled) return;
+  const username = userInput.value.trim();
+  const password = passInput.value;
+  const problem = validate(username, password, pass2Input.value);
+  if (problem) return setAuthMessage(problem);
+
+  authSubmit.disabled = true;
+  setAuthMessage(authMode === "register" ? "Konto wird erstellt …" : "Anmelden …", "info");
+  try {
+    if (authMode === "register") await api("/auth/register", { method: "POST", body: { username, password } });
+    const data = await api("/auth/login", { method: "POST", body: { username, password } });
+    session.token = data.token; session.username = username; session.guest = false;
+    saveToken(data.token, rememberInput.checked);
+    passInput.value = ""; pass2Input.value = "";
+    setAuthMessage("");
+    enterMenu();
+  } catch (err) {
+    setAuthMessage(err.message);
+  } finally {
+    authSubmit.disabled = false;
+  }
+});
+
+document.getElementById("guest-btn").addEventListener("click", () => {
+  session.token = null; session.username = null; session.guest = true;
+  enterMenu();
+});
+
+// --- Hauptmenue ---------------------------------------------------------
+const menuUser = document.getElementById("menu-user");
+function enterMenu() {
+  menuUser.textContent = session.guest ? "Du spielst als Gast." : `Angemeldet als ${session.username}`;
+  screens.menu.querySelector(".confirm-text").textContent = session.guest ? "Zurück zur Anmeldung?" : "Wirklich abmelden?";
+  showScreen("menu");
+}
+async function logout() {
+  if (session.token) {
+    try { await api("/auth/logout", { method: "POST", auth: true }); } catch { /* lokal trotzdem abmelden */ }
+  }
+  clearToken();
+  session.token = null; session.username = null; session.guest = false;
+  setAuthMode("login");
+  showScreen("auth");
+}
+
+// --- Alle Buttons ueber data-action verdrahten -------------------------
+const ACTIONS = {
+  "play": startGame,
+  "ask-logout": () => openConfirm(screens.menu),
+  "logout": logout,
+  "resume": resumeGame,
+  "restart": startGame,
+  "ask-menu": () => openConfirm(screens.pause),
+  "to-menu": enterMenu,
+  "cancel": (btn) => closeConfirm(btn.closest(".screen")),
+};
+document.querySelectorAll("[data-action]").forEach(btn => {
+  btn.addEventListener("click", () => ACTIONS[btn.dataset.action](btn));
+});
+
+// --- Start: gespeicherten Token pruefen --------------------------------
+setAuthMode("login");
+showScreen("auth");
+(async () => {
+  const token = readToken();
+  if (!token) return;
+  session.token = token;
+  try {
+    const me = await api("/users/me", { auth: true });
+    session.username = me.username;
+    if (gameState === "auth") enterMenu();
+  } catch (err) {
+    if (err.status === 401) clearToken(); // abgelaufen -> neu anmelden
+    session.token = null;
+  }
+})();

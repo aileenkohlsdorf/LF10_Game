@@ -2,22 +2,114 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Level 1</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Untot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen&display=swap">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div id="stage" tabindex="0">
+<div id="stage" tabindex="0" class="in-menu">
   <canvas id="game" width="960" height="540"></canvas>
-  <div id="hud">
-    <div id="hearts"></div>
-    <div id="ammo"></div>
-  </div>
-  <div id="hint">A/D Bewegen · Leertaste Springen (2x = Doppelsprung) · Maus zielen · Klick schießen · R nachladen</div>
-  <div id="focusNotice">Klicken zum Starten</div>
-  <div id="message">
-    <div id="message-text"></div>
-    <button id="message-btn">Nochmal versuchen</button>
+
+  <!-- UI-Ebene: 480x270 UI-Pixel, wird per JS auf die Spielgroesse skaliert -->
+  <div id="ui">
+
+    <!-- HUD im Spiel -->
+    <div id="hud" hidden>
+      <div id="hp-bar" role="img">
+        <div id="hp-track"><div id="hp-fill"></div></div>
+      </div>
+      <div id="hearts" role="img" hidden></div>
+      <div class="ammo-row">
+        <div id="ammo" role="img"></div>
+        <span id="reload-label" hidden>Nachladen …</span>
+      </div>
+    </div>
+
+    <div id="hint">A/D laufen, Leertaste springen (2x = Doppelsprung)<br>Maus zielen, Klick schießen, R nachladen, Esc Pause</div>
+
+    <!-- Anmelden / Registrieren -->
+    <section class="screen" data-screen="auth" hidden>
+      <h1 class="title">Untot</h1>
+      <div class="panel auth-panel">
+        <div class="tabs" role="tablist">
+          <button type="button" class="tab" role="tab" data-mode="login">Anmelden</button>
+          <button type="button" class="tab" role="tab" data-mode="register">Registrieren</button>
+        </div>
+        <form id="auth-form" novalidate>
+          <label class="field">
+            <span>Benutzername</span>
+            <input id="auth-user" type="text" autocomplete="username" maxlength="16" spellcheck="false" data-autofocus>
+          </label>
+          <label class="field">
+            <span>Passwort</span>
+            <input id="auth-pass" type="password" autocomplete="current-password">
+          </label>
+          <label class="field" id="field-pass2" hidden>
+            <span>Passwort wiederholen</span>
+            <input id="auth-pass2" type="password" autocomplete="new-password">
+          </label>
+          <label class="check">
+            <input id="auth-remember" type="checkbox" checked>
+            <span class="check-box" aria-hidden="true"></span>
+            <span>Angemeldet bleiben</span>
+          </label>
+          <p id="auth-error" role="alert"></p>
+          <button type="submit" id="auth-submit" class="btn btn-blank"><span>Anmelden</span></button>
+        </form>
+      </div>
+      <button type="button" id="guest-btn" class="link">Ohne Konto spielen</button>
+    </section>
+
+    <!-- Hauptmenue -->
+    <section class="screen" data-screen="menu" hidden>
+      <h1 class="title">Untot</h1>
+      <div class="menu-main">
+        <p id="menu-user" class="meta"></p>
+        <button type="button" class="btn btn-play" data-action="play" aria-label="Spielen" data-autofocus></button>
+        <button type="button" class="btn btn-quit" data-action="ask-logout" aria-label="Abmelden"></button>
+      </div>
+      <div class="confirm panel" hidden>
+        <p class="confirm-text"></p>
+        <div class="yes-no">
+          <button type="button" class="btn-icon btn-yes" data-action="logout" aria-label="Ja"></button>
+          <button type="button" class="btn-icon btn-no" data-action="cancel" aria-label="Nein"></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Pause -->
+    <section class="screen screen-dim" data-screen="pause" hidden>
+      <div class="panel menu-panel">
+        <div class="menu-main">
+          <h2>Pause</h2>
+          <button type="button" class="btn btn-play" data-action="resume" aria-label="Weiterspielen" data-autofocus></button>
+          <button type="button" class="btn btn-blank" data-action="restart"><span>Neustart</span></button>
+          <button type="button" class="btn btn-blank" data-action="ask-menu"><span>Hauptmenü</span></button>
+        </div>
+        <div class="confirm" hidden>
+          <h2>Hauptmenü?</h2>
+          <p class="confirm-text">Der Fortschritt in diesem Level geht verloren.</p>
+          <div class="yes-no">
+            <button type="button" class="btn-icon btn-yes" data-action="to-menu" aria-label="Ja"></button>
+            <button type="button" class="btn-icon btn-no" data-action="cancel" aria-label="Nein"></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Game Over -->
+    <section class="screen screen-dim" data-screen="gameover" hidden>
+      <div class="panel menu-panel">
+        <h2 class="danger">Game Over</h2>
+        <p class="meta">Keine Leben mehr.</p>
+        <button type="button" class="btn btn-blank" data-action="restart" data-autofocus><span>Nochmal</span></button>
+        <button type="button" class="btn btn-blank" data-action="to-menu"><span>Hauptmenü</span></button>
+      </div>
+    </section>
+
   </div>
 </div>
 <script src="game.js"></script>

@@ -1,42 +1,202 @@
-:root { color-scheme: dark; }
+/* Farben aus den UI-Sprites abgeleitet */
+:root {
+  color-scheme: dark;
+  --ink: #2c1d35;      /* dunkelste Kontur der Sprites */
+  --slate: #47405a;
+  --stone: #998b8f;
+  --bone: #c7bba7;
+  --cream: #f5e9bb;
+  --blood: #ad5258;
+  --white: #f7f5f6;
+  --pixel-font: "Silkscreen", "Courier New", monospace;
+}
 * { box-sizing: border-box; }
 html, body {
-  height: 100%; margin: 0; background: #0f1012; overflow: hidden;
-  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  height: 100%; margin: 0; background: #17101c; overflow: hidden;
+  font-family: var(--pixel-font);
 }
-body { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 10px; padding: 10px; }
-#stage { position: relative; width: 100%; max-width: 1100px; aspect-ratio: 16/9; outline: none; }
+body {
+  display: flex; align-items: center; justify-content: center;
+  padding: max(10px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom));
+}
+#stage {
+  position: relative; width: 100%; max-width: 1100px; aspect-ratio: 16/9;
+  max-height: 100%; outline: none; overflow: hidden; border-radius: 6px;
+}
 canvas {
   width: 100%; height: 100%; display: block;
   image-rendering: pixelated; image-rendering: crisp-edges;
-  border-radius: 8px; background: #8fd1ea; cursor: crosshair;
+  background: #101810; cursor: crosshair;
 }
-#hud { position: absolute; top: 10px; left: 10px; display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
-#hearts { display: flex; gap: 4px; }
-#hearts span { font-size: 18px; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.8)); }
-#ammo { display: flex; align-items: center; gap: 3px; padding-left: 2px; }
-#ammo img {
-  width: 10px; height: 5px; image-rendering: pixelated;
-  filter: drop-shadow(0 1px 0 rgba(0,0,0,0.9));
+#stage.in-menu canvas { cursor: var(--menu-cursor, default); }
+
+/* ---- UI-Ebene: alles in 480x270 UI-Pixeln, wird per JS skaliert ---- */
+#ui {
+  position: absolute; left: 0; top: 0; width: 480px; height: 270px;
+  transform-origin: 0 0; pointer-events: none;
+  font-size: 8px; line-height: 10px; color: var(--bone);
+  -webkit-font-smoothing: none; font-smooth: never;
 }
-#ammo img.spent { opacity: 0.2; }
-#ammo .reload-label { margin-left: 6px; font-size: 11px; color: #d4d06d; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.9)); }
+#ui img, #ui .btn, #ui .btn-icon, #ui .panel, #hp-bar, .check-box { image-rendering: pixelated; }
+[hidden] { display: none !important; }
+
+/* ---- HUD ---- */
+#hud { position: absolute; top: 6px; left: 6px; display: flex; flex-direction: column; gap: 4px; }
+#hud.hurt { animation: hurt 0.28s steps(2) 1; }
+@keyframes hurt {
+  0%, 100% { transform: translate(0, 0); }
+  25% { transform: translate(-2px, 0); }
+  50% { transform: translate(2px, 1px); }
+  75% { transform: translate(-1px, 0); }
+}
+#hp-bar {
+  position: relative; width: 55px; height: 12px;
+  background: var(--img-hp-frame) no-repeat 0 0 / 55px 12px;
+}
+/* Fuellung liegt im Loch des Rahmens (x 13-52, y 4-7) */
+#hp-track { position: absolute; left: 13px; top: 4px; width: 40px; height: 4px; overflow: hidden; }
+#hp-fill {
+  height: 100%; width: 100%;
+  background: var(--img-hp-fill) no-repeat -2px 0 / 43px 4px;
+  transition: width 0.3s steps(6);
+}
+#hearts { display: flex; gap: 1px; }
+#hearts img { width: 13px; height: 12px; display: block; }
+.ammo-row { display: flex; align-items: center; gap: 4px; }
+#ammo { display: flex; gap: 1px; }
+#ammo img { width: 7px; height: 13px; display: block; }
+#reload-label {
+  color: var(--cream); text-shadow: 1px 1px 0 var(--ink);
+  animation: blink 0.8s steps(2) infinite;
+}
+@keyframes blink { 50% { opacity: 0.35; } }
+
 #hint {
-  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
-  background: rgba(20,20,24,0.72); color: #eee; padding: 6px 14px; border-radius: 8px;
-  font-size: 12px; text-align: center; white-space: nowrap; transition: opacity 1s ease;
+  position: absolute; bottom: 6px; left: 50%; transform: translateX(-50%);
+  background: rgba(44, 29, 53, 0.82); color: var(--bone);
+  padding: 3px 6px; width: max-content; max-width: 440px; text-align: center;
+  box-shadow: 0 0 0 1px var(--slate);
+  opacity: 0; transition: opacity 1s ease;
 }
-#focusNotice {
-  position: absolute; inset: 0; background: rgba(10,10,12,0.55);
-  display: none; align-items: center; justify-content: center;
-  color: #fff; font-size: 15px; cursor: pointer; border-radius: 8px;
+#hint.show { opacity: 1; }
+
+/* ---- Bildschirme ---- */
+.screen {
+  position: absolute; inset: 0; pointer-events: auto;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  background: radial-gradient(ellipse 70% 80% at 50% 50%, rgba(44, 29, 53, 0.25), rgba(23, 16, 28, 0.85));
+  cursor: var(--menu-cursor, default);
 }
-#message {
-  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  background: rgba(20,20,24,0.85); color: #eee; padding: 18px 28px; border-radius: 10px;
-  font-size: 18px; text-align: center; display: none;
+.screen-dim { background: rgba(23, 16, 28, 0.62); }
+
+.title {
+  margin: 0 0 4px; font-size: 40px; line-height: 40px; font-weight: 400;
+  color: var(--bone);
+  /* Pixel-Kontur + blutroter Versatz nach unten */
+  text-shadow:
+    -1px 0 0 var(--ink), 1px 0 0 var(--ink), 0 -1px 0 var(--ink),
+    0 2px 0 var(--ink), 0 4px 0 var(--blood), 0 5px 0 var(--ink);
 }
-#message button {
-  margin-top: 10px; display: block; width: 100%; background: #4aa3df; border: none;
-  color: white; font-weight: 700; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 14px;
+h2 {
+  margin: 0 0 2px; font-size: 16px; line-height: 16px; font-weight: 400;
+  color: var(--cream); text-shadow: 0 1px 0 var(--ink); text-align: center;
+}
+h2.danger { color: #e0868b; }
+.meta { margin: 0; color: var(--bone); text-shadow: 0 1px 0 var(--ink); text-align: center; }
+
+/* Panel = Inventory_1.png als 9-Slice (Rahmen 7px) */
+.panel {
+  border: 7px solid transparent;
+  border-image: var(--img-panel) 7 fill / 7px stretch;
+  padding: 4px 8px 6px;
+}
+.menu-panel, .menu-main, .confirm {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+}
+.menu-panel { min-width: 120px; padding: 6px 14px 8px; }
+.screen > .confirm { padding: 6px 14px 8px; max-width: 200px; }
+.confirm-text { margin: 0 0 2px; text-align: center; color: var(--bone); max-width: 150px; text-shadow: 0 1px 0 var(--ink); }
+
+/* ---- Login-Panel ---- */
+.auth-panel { width: 196px; }
+.tabs { display: flex; justify-content: center; gap: 12px; margin-bottom: 4px; }
+.tab {
+  font: inherit; background: none; border: 0; padding: 0 0 1px; cursor: inherit;
+  color: var(--stone); text-shadow: 0 1px 0 var(--ink);
+  border-bottom: 1px solid transparent;
+}
+.tab[aria-selected="true"] { color: var(--cream); border-bottom-color: var(--cream); }
+.tab:hover { color: var(--bone); }
+#auth-form { display: flex; flex-direction: column; gap: 4px; }
+.field { display: flex; flex-direction: column; gap: 1px; }
+.field > span { color: var(--bone); text-shadow: 0 1px 0 var(--ink); }
+.field input {
+  font: inherit; color: var(--cream); caret-color: var(--cream);
+  height: 14px; width: 100%; padding: 0 3px; margin: 0;
+  background: var(--ink); border: 1px solid var(--slate); border-bottom-color: var(--stone);
+  border-radius: 0; outline: none; cursor: text;
+}
+.field input:focus { border-color: var(--bone); }
+
+.check { display: flex; align-items: center; gap: 4px; cursor: inherit; align-self: flex-start; margin-top: 1px; }
+.check input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+.check-box {
+  position: relative; width: 7px; height: 7px; flex: none;
+  background: var(--img-check-body) no-repeat 0 0 / 7px 7px;
+}
+.check input:checked + .check-box::after {
+  content: ""; position: absolute; left: 1px; top: -1px; width: 7px; height: 5px;
+  background: var(--img-check-anim) no-repeat 0 0 / 35px 5px;
+  animation: tick 0.25s steps(4, jump-none) forwards;
+}
+@keyframes tick { from { background-position: 0 0; } to { background-position: -28px 0; } }
+.check input:focus-visible + .check-box { outline: 1px solid var(--cream); outline-offset: 1px; }
+
+#auth-error { margin: 0; min-height: 10px; color: #e0868b; text-shadow: 0 1px 0 var(--ink); }
+#auth-error[data-kind="info"] { color: var(--bone); }
+#auth-submit { align-self: center; }
+
+.link {
+  font: inherit; background: none; border: 0; padding: 2px 4px; cursor: inherit;
+  color: var(--bone); text-shadow: 0 1px 0 var(--ink);
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.link:hover { color: var(--cream); }
+
+/* ---- Sprite-Buttons (76x21, gedrueckt 76x19 unten ausgerichtet) ---- */
+.btn {
+  --up: var(--img-blank-up); --down: var(--img-blank-down);
+  width: 76px; height: 21px; flex: none; border: 0; margin: 0;
+  padding: 0 0 4px; cursor: inherit;
+  background: var(--up) no-repeat 0 0 / 76px 21px;
+  display: flex; align-items: center; justify-content: center;
+  font: inherit; color: var(--white); text-shadow: 1px 1px 0 #7a6c76;
+}
+.btn-play { --up: var(--img-play-up); --down: var(--img-play-down); }
+.btn-quit { --up: var(--img-quit-up); --down: var(--img-quit-down); }
+.btn:hover { filter: brightness(1.08); }
+.btn:active, .btn:disabled {
+  background: var(--down) no-repeat 0 2px / 76px 19px;
+  padding: 2px 0;
+}
+.btn:disabled { filter: saturate(0.6); }
+
+.yes-no { display: flex; gap: 10px; margin-top: 2px; }
+.btn-icon {
+  --up: var(--img-yes-up); --down: var(--img-yes-down);
+  width: 20px; height: 18px; border: 0; padding: 0; cursor: inherit;
+  background: var(--up) no-repeat 0 0 / 20px 18px;
+}
+.btn-no { --up: var(--img-no-up); --down: var(--img-no-down); width: 18px; }
+.btn-icon:active { background: var(--down) no-repeat 0 2px / 100% 16px; }
+.btn-icon:hover { filter: brightness(1.1); }
+
+.btn:focus-visible, .btn-icon:focus-visible, .tab:focus-visible, .link:focus-visible {
+  outline: 1px solid var(--cream); outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #hud.hurt, #reload-label, .check input:checked + .check-box::after { animation: none; }
+  .check input:checked + .check-box::after { background-position: -28px 0; }
+  #hp-fill, #hint { transition: none; }
 }

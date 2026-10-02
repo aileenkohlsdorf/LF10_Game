@@ -243,6 +243,86 @@ const AXE_GRAVITY = 0.2;       // Bogen
 const AXE_SPIN_TICKS = 3, AXE_LANDING_TICKS = 4;
 const AXE_HITBOX = 22;
 
+// --- Treffer-Effekt (Blutspritzer, wenn eine Kugel einen Gegner trifft) ---
+// Zwei Varianten a 3 Frames, es wird zufaellig eine gewaehlt.
+const HIT_FX = [
+  { img: loadImg("assets/effects/shot_1-Sheet3.png"), frames: 3 },
+  { img: loadImg("assets/effects/shot_2-Sheet3.png"), frames: 3 },
+];
+const HIT_FX_SCALE = 3, HIT_FX_TICKS = 4;
+
+// --- Farben der Gegner kraeftiger machen --------------------------------
+// Die Gegner-Sprites wirken neben dem satten Level etwas blass. Beim Start
+// wird jedes Gegner-Sheet einmal umgerechnet: Saettigung hoch, etwas mehr
+// Kontrast, und die grau-blaue Haut wird leicht Richtung Tuerkis verschoben,
+// damit sie zum Gras im Level passt. Blut/Rot bleibt rot, schwarze Umrisse
+// und weisse Effekt-Pixel bleiben, wie sie sind.
+// SATURATION/CONTRAST = 1 und HUE_SHIFT = 0 -> Originalfarben.
+const ENEMY_SATURATION = 2.4;
+const ENEMY_CONTRAST = 1.18;
+const ENEMY_HUE_SHIFT = -0.05;   // nur fuer Blau-/Grautoene (Farbkreis 0..1)
+
+function vibrantCopy(img) {
+  if (!img.naturalWidth) return img;
+  const c = document.createElement("canvas");
+  c.width = img.naturalWidth; c.height = img.naturalHeight;
+  const g = c.getContext("2d");
+  g.drawImage(img, 0, 0);
+  const data = g.getImageData(0, 0, c.width, c.height);
+  const d = data.data;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] === 0) continue;
+    const r = d[i] / 255, gg = d[i + 1] / 255, b = d[i + 2] / 255;
+    const max = Math.max(r, gg, b), min = Math.min(r, gg, b);
+    let l = (max + min) / 2;
+    if (l < 0.12) continue;                  // Umrisse nicht anfassen
+    let h = 0, sat = 0;
+    if (max !== min) {
+      const dd = max - min;
+      sat = l > 0.5 ? dd / (2 - max - min) : dd / (max + min);
+      if (max === r) h = (gg - b) / dd + (gg < b ? 6 : 0);
+      else if (max === gg) h = (b - r) / dd + 2;
+      else h = (r - gg) / dd + 4;
+      h /= 6;
+    }
+    sat = Math.min(1, sat * ENEMY_SATURATION);
+    if (h > 0.4 && h < 0.75) h += ENEMY_HUE_SHIFT;
+    l = Math.min(1, Math.max(0, 0.5 + (l - 0.5) * ENEMY_CONTRAST));
+    // HSL -> RGB
+    const q = l < 0.5 ? l * (1 + sat) : l + sat - l * sat, p = 2 * l - q;
+    const hue = (t) => {
+      if (t < 0) t += 1; if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+    d[i] = Math.round(hue(h + 1 / 3) * 255);
+    d[i + 1] = Math.round(hue(h) * 255);
+    d[i + 2] = Math.round(hue(h - 1 / 3) * 255);
+  }
+  g.putImageData(data, 0, 0);
+  // damit der restliche Code das Canvas wie ein geladenes Bild behandeln kann
+  c.naturalWidth = c.width; c.naturalHeight = c.height;
+  return c;
+}
+
+// Alle Bilder der benutzten Gegnertypen (und der Wurfaxt) austauschen
+function makeEnemiesVibrant() {
+  if (ENEMY_SATURATION === 1 && ENEMY_CONTRAST === 1 && ENEMY_HUE_SHIFT === 0) return;
+  const done = new Map();
+  const conv = (img) => { if (!done.has(img)) done.set(img, vibrantCopy(img)); return done.get(img); };
+  const walk = (obj) => {
+    if (!obj || typeof obj !== "object") return;
+    for (const [k, v] of Object.entries(obj)) {
+      if (v instanceof Image) obj[k] = conv(v);
+      else if (!(v instanceof HTMLCanvasElement)) walk(v);
+    }
+  };
+  for (const type of new Set(ENEMY_SPAWNS.map(sp => sp.type))) walk(ENEMY_TYPES[type]?.anims);
+  walk(THROWN_AXE);
+}
+
 // --- Grosser Zombie: langsamer Tank auf der mittleren Plattform ---------
 // Schlag (First-Attack) im Nahkampf, Boden-Stampfer (Second-Attack) mit
 // Schockwelle: trifft alle, die auf seiner Plattform am Boden stehen ->
@@ -334,6 +414,7 @@ function onReady() {
     SECRET_TRIGGER = toRect(SECRET_TRIGGER_RAW);
     player.x = 24;
     player.y = GROUND[0].y - player.h;
+    makeEnemiesVibrant();
     spawnEnemies();
   }
 }
@@ -914,7 +995,8 @@ function hitEnemy(e, b) {
 
   e.hp--;
   e.flash = 6;
-  spawnSparks(b.x, b.y, e.t.hitColor, 4);
+  spawnSparks(b.x, b.y, e.t.hitColor, 3);
+  spawnHitFx(b.x, b.y, fromDir);
   if (e.hp <= 0) {
     const deaths = e.t.deathAnims || ["dead"];
     e.deathAnim = deaths[Math.floor(Math.random() * deaths.length)];
@@ -1060,6 +1142,13 @@ function updateBullets() {
   bullets = bullets.filter(b => !b.dead);
 }
 
+function spawnHitFx(x, y, dir) {
+  const fx = HIT_FX[Math.floor(Math.random() * HIT_FX.length)];
+  const life = fx.frames * HIT_FX_TICKS;
+  // Spritzer leicht in Flugrichtung der Kugel versetzt, Richtung zufaellig gespiegelt
+  particles.push({ type: "hitfx", fx, x: x + dir * 3, y, flip: Math.random() < 0.5, life, maxLife: life });
+}
+
 function spawnSparks(x, y, color, n) {
   for (let i = 0; i < n; i++) {
     particles.push({
@@ -1097,6 +1186,7 @@ function spawnDebris(x, y, color, n) {
 function updateParticles() {
   for (const p of particles) {
     p.life--;
+    if (p.type === "hitfx") continue;
     if (p.type === "spark") { p.x += p.vx; p.y += p.vy; p.vy += 0.15; continue; }
     // Huelse/Splitter: Schwerkraft, auf Plattformen aufkommen, kurz abprallen, liegen bleiben
     p.vy += 0.25;
@@ -1380,6 +1470,16 @@ function drawBullets() {
 function drawParticles() {
   for (const p of particles) {
     ctx.globalAlpha = Math.min(1, p.life / 30);
+    if (p.type === "hitfx") {
+      ctx.globalAlpha = 1;
+      const img = p.fx.img;
+      if (!img.naturalWidth) continue;
+      const fw = img.naturalWidth / p.fx.frames, fh = img.naturalHeight;
+      const f = Math.min(p.fx.frames - 1, Math.floor((p.maxLife - p.life) / HIT_FX_TICKS));
+      const w = fw * HIT_FX_SCALE, h = fh * HIT_FX_SCALE;
+      drawFrame(img, f * fw, 0, fw, fh, Math.round(p.x - w / 2), Math.round(p.y - h / 2), w, h, p.flip, false);
+      continue;
+    }
     if (p.type === "casing") ctx.drawImage(casingImg, Math.round(p.x) - 1, Math.round(p.y) - 1, 2, 2);
     else { ctx.fillStyle = p.color; ctx.fillRect(Math.round(p.x), Math.round(p.y), 2, 2); }
   }

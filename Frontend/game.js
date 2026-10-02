@@ -23,6 +23,20 @@ const ENEMY_SPAWNS = [
   { type: "rat",            x: 880,  y: 258 }, // schwebende Plattform rechts (x 834–926)
 ];
 
+// Aufsammel-Gegenstaende: type = Eintrag aus PICKUP_TYPES, x = Mitte,
+// y = Oberkante der Plattform (level.png-Koordinaten). room: "secret" = im
+// Geheimraum (Koordinaten in secret-room.png, Boden liegt dort bei y 34).
+const PICKUP_SPAWNS = [
+  { type: "ammo",  x: 160,  y: 322 },               // Plattform nach dem Start
+  { type: "ammo",  x: 470,  y: 258 },               // schwebend ueber dem grossen Zombie, vor den Zacken
+  { type: "heart", x: 40,   y: 178 },               // ganz oben links (bei der Ratte)
+  { type: "ammo",  x: 812,  y: 402 },               // Plattform mit den Baeumen (Axt-Zombie)
+  { type: "ammo",  x: 1004, y: 210 },               // schwebend rechts, hinter den Zacken
+  { type: "heart", x: 1250, y: 274 },               // Ende der grossen Plattform rechts
+  { type: "heart", x: 160,  y: 34, room: "secret" }, // Belohnung im Geheimraum
+  { type: "ammo",  x: 196,  y: 34, room: "secret" },
+];
+
 // --- Asset-Loader ---------------------------------------------------
 // Im Prototyp (eine einzelne HTML-Datei) liegen alle Bilder als data-URIs in
 // window.ASSET_MAP. Im normalen Projekt ist die Map leer -> echte Dateipfade.
@@ -82,6 +96,9 @@ const GUN_DIRS = {
 const HAND_X_RIGHT = 9, HAND_X_LEFT = 0, HAND_Y_FROM_BOTTOM = 4;
 
 const MAG_SIZE = 8;          // Schuss pro Magazin
+const MAX_RESERVE = 50;      // so viele Patronen passen ins "Inventar" (wie im Backend)
+const START_RESERVE = 10;    // Reserve beim Levelstart
+const AMMO_PER_PICKUP = 10;  // eine aufgesammelte Patrone = 10 Schuss
 const SHOT_COOLDOWN = 14;    // Frames zwischen zwei Schuessen
 const SHOOT_ANIM_TICKS = 3;  // Frames pro Schuss-Animationsbild
 const RELOAD_ANIM_TICKS = 5; // Frames pro Nachlade-Animationsbild (11 Bilder ≈ 0,9 s)
@@ -453,6 +470,7 @@ function onReady() {
     player.y = GROUND[0].y - player.h;
     makeEnemiesVibrant();
     spawnEnemies();
+    spawnPickups();
   }
 }
 
@@ -472,6 +490,7 @@ const player = {
 
 const gun = {
   ammo: MAG_SIZE,
+  reserve: START_RESERVE, // Patronen im Inventar, nur damit kann man nachladen
   state: "idle",     // "idle" | "shoot" | "reload"
   tick: 0,
   cooldown: 0,
@@ -572,9 +591,10 @@ function restart() {
   player.x = 24; player.y = GROUND[0].y - player.h;
   player.vx = 0; player.vy = 0; player.lives = 5; player.invulnFrames = 90;
   player.inSecretRoom = false; player.jumpsUsed = 0;
-  gun.ammo = MAG_SIZE; gun.state = "idle"; gun.tick = 0; gun.cooldown = 0; gun.flash = 0;
-  bullets = []; particles = [];
+  gun.ammo = MAG_SIZE; gun.reserve = START_RESERVE; gun.state = "idle"; gun.tick = 0; gun.cooldown = 0; gun.flash = 0;
+  bullets = []; particles = []; floaters = [];
   spawnEnemies();
+  spawnPickups();
   gameOver = false;
 }
 
@@ -1116,7 +1136,7 @@ function gunOrigin(px, py, scale) {
 }
 
 function startReload() {
-  if (gun.state === "reload" || gun.ammo === MAG_SIZE) return;
+  if (gun.state === "reload" || gun.ammo === MAG_SIZE || gun.reserve === 0) return;
   gun.state = "reload"; gun.tick = 0;
 }
 
@@ -1162,7 +1182,12 @@ function updateGun() {
     }
   } else if (gun.state === "reload") {
     gun.tick++;
-    if (gun.tick >= 11 * RELOAD_ANIM_TICKS) { gun.ammo = MAG_SIZE; gun.state = "idle"; }
+    if (gun.tick >= 11 * RELOAD_ANIM_TICKS) {
+      // nur so viele Patronen nachladen, wie in der Reserve sind
+      const take = Math.min(MAG_SIZE - gun.ammo, gun.reserve);
+      gun.ammo += take; gun.reserve -= take;
+      gun.state = "idle";
+    }
   }
 
   if (keys["r"]) startReload();
@@ -1171,7 +1196,8 @@ function updateGun() {
   shotQueued = false;
   if (wantsShot && gun.state !== "reload" && gun.cooldown === 0) {
     if (gun.ammo > 0) fire();
-    else startReload();
+    else if (gun.reserve > 0) startReload();
+    else { gun.cooldown = SHOT_COOLDOWN; flashNoAmmo(); } // Magazin und Reserve leer
   }
 }
 
@@ -1272,6 +1298,7 @@ function update() {
     const playerCenterX = player.x + player.w / 2;
     const atOpening = playerCenterX > SECRET_OPENING.xMin && playerCenterX < SECRET_OPENING.xMax;
     if (atOpening && (keys["s"] || keys["arrowdown"])) exitSecretRoom();
+    updatePickups();
     updateHUD();
     return;
   }
@@ -1319,8 +1346,123 @@ function update() {
   for (const e of enemies) updateEnemy(e);
   enemies = enemies.filter(e => !e.removed);
   updateAxes();
+  updatePickups();
   updateParticles();
   updateHUD();
+}
+
+// =====================================================================
+// AUFSAMMEL-GEGENSTAENDE (Herzen + Munition)
+// =====================================================================
+const PICKUP_PATH = "assets/pickups/";
+const PICKUP_TYPES = {
+  heart: {
+    img: loadImg(`${PICKUP_PATH}Heart_Icon.png`),
+    scale: 0.5,               // Icon ist 33x31 -> auf halbe Groesse (ca. 17x16)
+    color: "#f07f86",
+    canTake: () => player.lives < player.maxLives,
+    take: () => { player.lives++; return "+1 Leben"; },
+    fullText: "Leben voll",
+  },
+  ammo: {
+    img: loadImg(`${PICKUP_PATH}Pistol-Bullet.png`),
+    scale: 1,                 // Originalgroesse 7x13
+    color: "#f5e9bb",
+    canTake: () => gun.reserve < MAX_RESERVE,
+    take: () => {
+      const n = Math.min(AMMO_PER_PICKUP, MAX_RESERVE - gun.reserve);
+      gun.reserve += n;
+      if (gun.ammo === 0) startReload(); // Magazin war leer -> gleich nachladen
+      return `+${n} Schuss`;
+    },
+    fullText: `Max. ${MAX_RESERVE}`,
+  },
+};
+const PICKUP_HOVER = 6;   // Abstand ueber dem Boden
+let pickups = [];
+let floaters = [];        // aufsteigende Texte wie "+10 Schuss"
+
+function spawnPickups() {
+  pickups = PICKUP_SPAWNS.map((p, i) => ({
+    ...p,
+    room: p.room || "level",
+    groundY: p.room === "secret" ? p.y : p.y + LEVEL_Y_OFFSET,
+    phase: i * 1.7,         // nicht alle wippen gleichzeitig
+    touching: false,
+    taken: false,
+  }));
+}
+
+function pickupRect(p, t) {
+  const def = PICKUP_TYPES[p.type];
+  const w = def.img.naturalWidth * def.scale, h = def.img.naturalHeight * def.scale;
+  const bob = Math.round(Math.sin(t / 380 + p.phase) * 2);
+  return { x: p.x - w / 2, y: p.groundY - PICKUP_HOVER - h + bob, w, h };
+}
+
+function updatePickups() {
+  const room = player.inSecretRoom ? "secret" : "level";
+  for (const p of pickups) {
+    if (p.taken || p.room !== room) continue;
+    const r = pickupRect(p, animTimer);
+    const touching = rectsOverlap(player, r);
+    if (touching) {
+      const def = PICKUP_TYPES[p.type];
+      if (def.canTake()) {
+        p.taken = true;
+        addFloater(p.x, r.y, def.take(), def.color);
+        if (room === "level") spawnSparks(p.x, r.y + r.h / 2, def.color, 10);
+      } else if (!p.touching) {
+        addFloater(p.x, r.y, def.fullText, "#c7bba7"); // nur einmal pro Beruehrung
+      }
+    }
+    p.touching = touching;
+  }
+  for (const f of floaters) { f.y -= 0.5; f.life--; }
+  floaters = floaters.filter(f => f.life > 0);
+}
+
+function addFloater(x, y, text, color) {
+  floaters.push({ x, y, text, color, life: 60, room: player.inSecretRoom ? "secret" : "level" });
+}
+
+// ox/oy/scale: im Geheimraum wird der Raum vergroessert gezeichnet
+function drawPickups(ox, oy, scale) {
+  const room = player.inSecretRoom ? "secret" : "level";
+  for (const p of pickups) {
+    if (p.taken || p.room !== room) continue;
+    const def = PICKUP_TYPES[p.type];
+    const r = pickupRect(p, animTimer);
+    // weicher Schatten am Boden
+    ctx.fillStyle = "rgba(20, 12, 24, 0.35)";
+    ctx.beginPath();
+    ctx.ellipse(ox + p.x * scale, oy + p.groundY * scale - 1, r.w * 0.45 * scale, 2 * scale, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.drawImage(def.img, Math.round(ox + r.x * scale), Math.round(oy + r.y * scale),
+      Math.round(r.w * scale), Math.round(r.h * scale));
+  }
+}
+
+function drawFloaters(ox, oy, scale) {
+  const room = player.inSecretRoom ? "secret" : "level";
+  ctx.save();
+  ctx.font = '16px "Silkscreen", "Courier New", monospace';
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  for (const f of floaters) {
+    if (f.room !== room) continue;
+    // Text am Bildrand nicht abschneiden (im Level ist der Canvas um cameraX verschoben)
+    const half = ctx.measureText(f.text).width / 2 + 4;
+    const viewL = scale === 1 ? cameraX : 0;
+    const x = Math.round(Math.max(viewL + half, Math.min(ox + f.x * scale, viewL + W - half)));
+    const y = Math.round(oy + f.y * scale) - 4;
+    ctx.globalAlpha = Math.min(1, f.life / 20);
+    ctx.fillStyle = "#2c1d35";
+    ctx.fillText(f.text, x, y + 2);
+    ctx.fillStyle = f.color;
+    ctx.fillText(f.text, x, y);
+  }
+  ctx.restore();
 }
 
 // --- HUD: Leben + Munition (nur neu zeichnen, wenn sich etwas aendert) ---
@@ -1333,6 +1475,15 @@ const hpFillEl = document.getElementById("hp-fill");
 const hudHearts = document.getElementById("hearts");
 const hudAmmo = document.getElementById("ammo");
 const reloadLabel = document.getElementById("reload-label");
+const reserveEl = document.getElementById("reserve");
+const reserveCountEl = document.getElementById("reserve-count");
+reserveEl.querySelector(".reserve-max").textContent = `/${MAX_RESERVE}`;
+let noAmmoUntil = 0;
+// Klick ohne Munition: Hinweis kurz einblenden
+function flashNoAmmo() {
+  noAmmoUntil = performance.now() + 900;
+  lastHudKey = "";
+}
 hpBarEl.hidden = HEALTH_STYLE !== "bar";
 hudHearts.hidden = HEALTH_STYLE !== "hearts";
 const ammoIcons = [];
@@ -1343,9 +1494,11 @@ for (let i = 0; i < MAG_SIZE; i++) {
   ammoIcons.push(img);
 }
 
-let lastHudKey = "", lastHudLives = null;
+let lastHudKey = "", lastHudLives = null, lastHudReserve = null;
 function updateHUD() {
-  const key = `${player.lives}|${gun.ammo}|${gun.state === "reload"}`;
+  const noAmmo = gun.ammo === 0 && gun.reserve === 0;
+  const showNoAmmo = noAmmo && performance.now() < noAmmoUntil;
+  const key = `${player.lives}|${gun.ammo}|${gun.reserve}|${gun.state === "reload"}|${showNoAmmo}`;
   if (key === lastHudKey) return;
   lastHudKey = key;
   const lives = Math.max(0, player.lives);
@@ -1369,7 +1522,16 @@ function updateHUD() {
     img.src = asset(UI + (i < gun.ammo ? "Pistol-Bullet.png" : "Pistol-Bullet_Empty.png"));
   });
   hudAmmo.setAttribute("aria-label", `Munition: ${gun.ammo} von ${MAG_SIZE}`);
-  reloadLabel.hidden = gun.state !== "reload";
+  reserveCountEl.textContent = gun.reserve;
+  reserveEl.classList.toggle("empty", gun.reserve === 0);
+  reserveEl.setAttribute("aria-label", `Reserve: ${gun.reserve} von ${MAX_RESERVE} Patronen`);
+  if (lastHudReserve !== null && gun.reserve > lastHudReserve) {
+    reserveEl.classList.remove("gain"); void reserveEl.offsetWidth; reserveEl.classList.add("gain");
+  }
+  lastHudReserve = gun.reserve;
+  reloadLabel.hidden = gun.state !== "reload" && !showNoAmmo;
+  reloadLabel.textContent = gun.state === "reload" ? "Nachladen …" : "Keine Munition";
+  reloadLabel.classList.toggle("warn", gun.state !== "reload");
 }
 
 // =====================================================================
@@ -1398,7 +1560,9 @@ function draw() {
     const dw = secretImg.naturalWidth * scale, dh = secretImg.naturalHeight * scale;
     const ox = (W - dw) / 2, oy = (H - dh) / 2;
     ctx.drawImage(secretImg, ox, oy, dw, dh);
+    drawPickups(ox, oy, scale);
     drawPlayer(ox + player.x * scale, oy + player.y * scale, scale);
+    drawFloaters(ox, oy, scale);
     return;
   }
 
@@ -1422,10 +1586,12 @@ function draw() {
   const levelY = H - levelImg.naturalHeight;
   ctx.drawImage(levelImg, 0, levelY);
   for (const e of enemies) drawEnemy(e);
+  drawPickups(0, 0, 1);
   drawAxes();
   drawParticles();
   drawPlayer(player.x, player.y, 1);
   drawBullets();
+  drawFloaters(0, 0, 1);
   ctx.restore();
 }
 
@@ -1762,7 +1928,7 @@ function showScreen(name) {
 
 function startGame() {
   restart();
-  lastHudKey = ""; lastHudLives = null;
+  lastHudKey = ""; lastHudLives = null; lastHudReserve = null;
   updateHUD();
   showScreen("none");
   stage.focus();

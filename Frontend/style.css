@@ -65,6 +65,18 @@ canvas {
 .ammo-row { display: flex; align-items: center; gap: 4px; }
 #ammo { display: flex; gap: 1px; }
 #ammo img { width: 7px; height: 13px; display: block; }
+#reserve {
+  display: flex; align-items: baseline; margin-left: 1px;
+  color: var(--cream); text-shadow: 1px 1px 0 var(--ink), -1px 0 0 var(--ink), 0 -1px 0 var(--ink);
+}
+#reserve .reserve-max { color: var(--stone); }
+#reserve.empty #reserve-count { color: #e0868b; }
+#reserve.gain { animation: gain 0.4s steps(3) 1; }
+@keyframes gain {
+  0% { transform: translateY(-2px); color: #fff; }
+  100% { transform: translateY(0); }
+}
+#reload-label.warn { color: #e0868b; }
 #reload-label {
   color: var(--cream); text-shadow: 1px 1px 0 var(--ink);
   animation: blink 0.8s steps(2) infinite;
@@ -196,7 +208,7 @@ h2.danger { color: #e0868b; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #hud.hurt, #reload-label, .check input:checked + .check-box::after { animation: none; }
+  #hud.hurt, #reserve.gain, #reload-label, .check input:checked + .check-box::after { animation: none; }
   .check input:checked + .check-box::after { background-position: -28px 0; }
   #hp-fill, #hint { transition: none; }
 }

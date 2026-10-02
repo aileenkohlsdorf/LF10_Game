@@ -32,3 +32,11 @@ Die Entwicklung des 2D-Frontends und der Oberwelt befindet sich noch im Aufbau.
 * Mia Sadowsky
 * Aileen Kohlsdorf
 
+## Tools und Assets die benutzt wurden
+
+Tilemap Studio als Mapping Tool
+
+Creator:
+- TheLazyStone on Itch.io (Apocalypse Asset Pack)
+- phewcumber on Itch.io (Monster Platformer, Rat Asset Pack)
+

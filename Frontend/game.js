@@ -10,12 +10,13 @@ const GROUND_RECTS_RAW = [[2, 386, 156, 94], [18, 178, 92, 28], [114, 322, 92, 2
 const SPIKE_RECTS_RAW = [[166, 424, 18, 28], [198, 424, 18, 28], [422, 440, 18, 28], [502, 232, 18, 24], [710, 440, 18, 28], [758, 440, 18, 28], [966, 184, 18, 24], [966, 440, 18, 28]];
 const SECRET_TRIGGER_RAW = [798, 46, 132, 100];
 
-// Gegner-Platzierung: x = Startposition, y = Oberkante der Plattform
-// (beides in level.png-Koordinaten). Die passende Plattform wird automatisch
-// gesucht, der Zombie patrouilliert dann genau auf deren Breite.
-// Fuer mehr Gegner spaeter einfach weitere Eintraege hinzufuegen.
+// Gegner-Platzierung: type = Eintrag aus ENEMY_TYPES, x = Startposition,
+// y = Oberkante der Plattform (beides in level.png-Koordinaten). Die passende
+// Plattform wird automatisch gesucht, der Gegner patrouilliert genau auf deren Breite.
 const ENEMY_SPAWNS = [
-  { type: "zombie", x: 620, y: 418 }, // breite Plattform in der Mitte (x 450–702)
+  { type: "zombie",         x: 620,  y: 418 }, // breite Plattform in der Mitte (x 450–702)
+  { type: "skeleton",       x: 256,  y: 274 }, // schwebende Plattform links (x 210–302)
+  { type: "skeletonShield", x: 1150, y: 274 }, // grosse Plattform ganz rechts (x 994–1278)
 ];
 
 // --- Asset-Loader ---------------------------------------------------
@@ -84,32 +85,76 @@ const BULLET_PATH = "assets/bullets/";
 const bulletImg = loadImg(`${BULLET_PATH}Pistol-bullet_Bullet.png`);
 const casingImg = loadImg(`${BULLET_PATH}Pistol-bullet_Casting.png`);
 
-// --- Zombie ------------------------------------------------------------
-// Jedes Sheet: 6 Frames a 64x64, Zombie schaut im Original nach LINKS,
-// Fuesse stehen im Frame auf y=48.
-const ZOMBIE_PATH = "assets/enemies/zombie/";
-const ZOMBIE_FRAME = 64, ZOMBIE_FEET_Y = 48;
-// Zeichen-Groesse des Zombies (1 = Original). 1.5 -> ca. 46px hoch, Spieler ist 32px.
+// --- Gegner-Typen -------------------------------------------------------
+// Alle Gegner-Sheets: Frames a 64x64 nebeneinander, Figur schaut im Original
+// nach LINKS, Fuesse stehen im Frame auf y=48.
+const ENEMY_FRAME = 64, ENEMY_FEET_Y = 48;
+// Zeichen-Groesse aller Gegner (1 = Original). 1.5 -> ca. 46px hoch, Spieler ist 32px.
 // Tipp: 2 ergibt die schaerfsten Pixel (ganzzahlig), ist aber deutlich groesser.
-const ZOMBIE_SCALE = 1.5;
-function zombieAnim(name, ticks, loop) {
-  return { img: loadImg(`${ZOMBIE_PATH}Zombie_Default_${name}.png`), frames: 6, ticks, loop };
-}
-const ZOMBIE_ANIMS = {
-  idle: zombieAnim("Idle", 10, true),
-  walk: zombieAnim("Walk", 8, true),
-  attack: zombieAnim("Attack1", 6, false),
-  hurt: zombieAnim("Hurt", 4, false),
-  dead: zombieAnim("Dead", 8, false),
+const ENEMY_SCALE = 1.5;
+
+function anim(path, frames, ticks, loop) { return { img: loadImg(path), frames, ticks, loop }; }
+const Z = "assets/enemies/zombie/";
+const SK = "assets/enemies/skeleton/";
+
+const zombieWalk = anim(`${Z}Zombie_Default_Walk.png`, 6, 8, true);
+// Das Skelett hat kein eigenes Death-Sheet -> es zeigt kurz den Hurt-Frame und
+// zerfaellt dann in Knochen-Splitter (crumble).
+const skeletonHurt = anim(`${SK}Skeleton_Default_Hurt.png`, 2, 6, false);
+const skeletonDeath = { ...skeletonHurt, ticks: 8 };
+
+// Werte in Sprite-Pixeln (werden mit ENEMY_SCALE multipliziert):
+//   w/h          = Hitbox
+//   attackGap    = Abstand Koerper-zu-Koerper, ab dem er zuschlaegt
+//   attackReach  = wie weit der Schlag vor den Koerper reicht
+//   attackHitFrame = in welchem Frame der Attack-Animation der Treffer zaehlt
+const ENEMY_TYPES = {
+  zombie: {
+    anims: {
+      idle: anim(`${Z}Zombie_Default_Idle.png`, 6, 10, true),
+      walk: zombieWalk,
+      chase: zombieWalk,
+      attack: anim(`${Z}Zombie_Default_Attack1.png`, 6, 6, false),
+      hurt: anim(`${Z}Zombie_Default_Hurt.png`, 6, 4, false),
+      dead: anim(`${Z}Zombie_Default_Dead.png`, 6, 8, false),
+    },
+    w: 16, h: 30, hp: 3,
+    patrolSpeed: 0.5, chaseSpeed: 0.9, aggroRange: 130,
+    attackGap: 4, attackReach: 14, attackHitFrame: 2, attackCooldown: 45,
+    hitColor: "#7fbf6a", shield: false, crumble: false,
+  },
+  // Skelett mit Schwert: schneller, rennt beim Verfolgen, groessere Reichweite
+  skeleton: {
+    anims: {
+      idle: anim(`${SK}Skeleton_Default_Idle_Sword.png`, 6, 10, true),
+      walk: anim(`${SK}MP_Skeleton_Default_Walk_Sword.png`, 6, 8, true),
+      chase: anim(`${SK}Skeleton_Default_Run_Sword.png`, 6, 5, true),
+      attack: anim(`${SK}Skeleton_Default_Attack_Sword.png`, 6, 6, false),
+      hurt: skeletonHurt,
+      dead: skeletonDeath,
+    },
+    w: 14, h: 30, hp: 3,
+    patrolSpeed: 0.6, chaseSpeed: 1.4, aggroRange: 150,
+    attackGap: 9, attackReach: 20, attackHitFrame: 2, attackCooldown: 40,
+    hitColor: "#e8e4d8", shield: false, crumble: true,
+  },
+  // Skelett mit Schild: langsamer, blockt Kugeln von vorne (ausser beim Zuschlagen)
+  skeletonShield: {
+    anims: {
+      idle: anim(`${SK}Skeleton_Default_Idle_Sword_Shield.png`, 6, 10, true),
+      walk: anim(`${SK}MP_Skeleton_Default_Walk_Sword_Shield.png`, 6, 8, true),
+      chase: anim(`${SK}Skeleton_Default_X_Sword_Shield.png`, 6, 6, true),
+      attack: anim(`${SK}Skeleton_Default_Attack_Sword_Shield.png`, 6, 7, false),
+      hurt: skeletonHurt,
+      dead: skeletonDeath,
+    },
+    w: 16, h: 30, hp: 4,
+    patrolSpeed: 0.45, chaseSpeed: 1.0, aggroRange: 150,
+    attackGap: 9, attackReach: 20, attackHitFrame: 2, attackCooldown: 55,
+    hitColor: "#e8e4d8", shield: true, crumble: true,
+  },
 };
-const ZOMBIE_W = Math.round(16 * ZOMBIE_SCALE), ZOMBIE_H = Math.round(30 * ZOMBIE_SCALE);
-const ZOMBIE_HP = 3;
-const ZOMBIE_PATROL_SPEED = 0.5;
-const ZOMBIE_CHASE_SPEED = 0.9;
-const ZOMBIE_AGGRO_RANGE = 130;   // ab dieser Distanz laeuft er auf den Spieler zu
-const ZOMBIE_ATTACK_GAP = 6;      // Abstand Koerper-zu-Koerper, ab dem er zuschlaegt
-const ZOMBIE_ATTACK_COOLDOWN = 45;
-const ZOMBIE_EDGE_PAUSE = 50;     // kurz stehen bleiben an der Plattformkante
+const ENEMY_EDGE_PAUSE = 50; // kurz stehen bleiben an der Plattformkante
 
 // --- Canvas / Fokus ----------------------------------------------------
 const canvas = document.getElementById("game");
@@ -288,7 +333,7 @@ function exitSecretRoom() {
 }
 
 // =====================================================================
-// GEGNER (Zombie)
+// GEGNER (Zombie, Skelett, Skelett mit Schild)
 // =====================================================================
 function findPlatform(x, topY) {
   const r = GROUND.find(g => x >= g.x && x <= g.x + g.w && Math.abs(g.y - (topY + LEVEL_Y_OFFSET)) <= 6);
@@ -296,15 +341,18 @@ function findPlatform(x, topY) {
   return r;
 }
 
-function createZombie(spawn) {
+function createEnemy(spawn) {
+  const t = ENEMY_TYPES[spawn.type];
   const plat = findPlatform(spawn.x, spawn.y);
-  if (!plat) return null;
+  if (!t || !plat) return null;
+  const w = Math.round(t.w * ENEMY_SCALE), h = Math.round(t.h * ENEMY_SCALE);
   return {
-    x: spawn.x - ZOMBIE_W / 2, y: plat.y - ZOMBIE_H, w: ZOMBIE_W, h: ZOMBIE_H,
+    type: spawn.type, t,
+    x: spawn.x - w / 2, y: plat.y - h, w, h,
     plat,
-    minX: plat.x + 4, maxX: plat.x + plat.w - ZOMBIE_W - 4,
-    dir: -1,                // -1 = links (so ist das Sprite gezeichnet), 1 = rechts
-    hp: ZOMBIE_HP,
+    minX: plat.x + 4, maxX: plat.x + plat.w - w - 4,
+    dir: -1,                // -1 = links (so sind die Sprites gezeichnet), 1 = rechts
+    hp: t.hp,
     state: "walk", animTick: 0,
     pauseTicks: 0, attackCooldown: 0, knockVx: 0, hitDone: false,
     deadTicks: 0, alpha: 1, removed: false,
@@ -312,108 +360,127 @@ function createZombie(spawn) {
 }
 
 function spawnEnemies() {
-  enemies = ENEMY_SPAWNS.map(createZombie).filter(Boolean);
+  enemies = ENEMY_SPAWNS.map(createEnemy).filter(Boolean);
 }
 
-function setZombieState(z, state) {
-  if (z.state !== state) { z.state = state; z.animTick = 0; z.hitDone = false; }
+function setEnemyState(e, state) {
+  if (e.state !== state) { e.state = state; e.animTick = 0; e.hitDone = false; }
 }
-function zombieFrame(z) {
-  const a = ZOMBIE_ANIMS[z.state];
-  const f = Math.floor(z.animTick / a.ticks);
+function enemyFrame(e) {
+  const a = e.t.anims[e.state];
+  const f = Math.floor(e.animTick / a.ticks);
   return a.loop ? f % a.frames : Math.min(f, a.frames - 1);
 }
-function zombieAnimDone(z) {
-  const a = ZOMBIE_ANIMS[z.state];
-  return !a.loop && z.animTick >= a.frames * a.ticks;
+function enemyAnimDone(e) {
+  const a = e.t.anims[e.state];
+  return !a.loop && e.animTick >= a.frames * a.ticks;
 }
-function clampToPlatform(z) {
-  z.x = Math.max(z.minX, Math.min(z.x, z.maxX));
+function clampToPlatform(e) {
+  e.x = Math.max(e.minX, Math.min(e.x, e.maxX));
 }
 
-function updateZombie(z) {
-  z.animTick++;
+function updateEnemy(e) {
+  const t = e.t, S = ENEMY_SCALE;
+  e.animTick++;
 
-  if (z.state === "dead") {
-    if (zombieAnimDone(z)) {
-      z.deadTicks++;
-      if (z.deadTicks > 120) z.alpha -= 1 / 60;   // Leiche liegt kurz, dann ausblenden
-      if (z.alpha <= 0) z.removed = true;
+  if (e.state === "dead") {
+    if (enemyAnimDone(e)) {
+      e.deadTicks++;
+      // Zombie-Leiche liegt kurz, Skelett zerfaellt sofort
+      const lieTicks = t.crumble ? 0 : 120;
+      if (e.deadTicks > lieTicks) e.alpha -= t.crumble ? 1 / 12 : 1 / 60;
+      if (e.alpha <= 0) e.removed = true;
     }
     return;
   }
-  if (z.attackCooldown > 0) z.attackCooldown--;
+  if (e.attackCooldown > 0) e.attackCooldown--;
+
+  // Rueckstoss (Treffer oder Schild-Block) laeuft unabhaengig vom Zustand aus
+  if (e.knockVx) {
+    e.x += e.knockVx; e.knockVx *= 0.8;
+    if (Math.abs(e.knockVx) < 0.05) e.knockVx = 0;
+    clampToPlatform(e);
+  }
 
   // Spieler "in der Naehe": horizontal ueber der Plattform und hoechstens
   // etwas darueber (z. B. im Sprung) -- nicht auf anderen Plattformen.
   const playerBottom = player.y + player.h;
   const playerNear =
     !player.inSecretRoom &&
-    player.x + player.w > z.plat.x && player.x < z.plat.x + z.plat.w &&
-    playerBottom <= z.plat.y + 2 && playerBottom >= z.plat.y - 90;
-  const dx = (player.x + player.w / 2) - (z.x + z.w / 2);
-  const gap = Math.abs(dx) - (z.w + player.w) / 2;
+    player.x + player.w > e.plat.x && player.x < e.plat.x + e.plat.w &&
+    playerBottom <= e.plat.y + 2 && playerBottom >= e.plat.y - 90;
+  const dx = (player.x + player.w / 2) - (e.x + e.w / 2);
+  const gap = Math.abs(dx) - (e.w + player.w) / 2;
 
-  if (z.state === "hurt") {
-    z.x += z.knockVx; z.knockVx *= 0.8;
-    clampToPlatform(z);
-    if (zombieAnimDone(z)) setZombieState(z, "walk");
+  if (e.state === "hurt") {
+    if (enemyAnimDone(e)) setEnemyState(e, "idle");
     return;
   }
 
-  if (z.state === "attack") {
-    // Frame 2 = der Schlag (Krallen-Wisch im Sprite) -> dann Treffer pruefen
-    if (zombieFrame(z) >= 2 && !z.hitDone) {
-      z.hitDone = true;
-      const r = 14 * ZOMBIE_SCALE;
-      const reach = { x: z.dir < 0 ? z.x - r : z.x + z.w - 4, y: z.y + 4, w: r + 4, h: z.h - 8 };
-      if (rectsOverlap(player, reach)) takeDamage(z.dir);
+  if (e.state === "attack") {
+    if (enemyFrame(e) >= t.attackHitFrame && !e.hitDone) {
+      e.hitDone = true;
+      const r = t.attackReach * S;
+      const reach = { x: e.dir < 0 ? e.x - r : e.x + e.w - 4, y: e.y + 4, w: r + 4, h: e.h - 8 };
+      if (rectsOverlap(player, reach)) takeDamage(e.dir);
     }
-    if (zombieAnimDone(z)) { z.attackCooldown = ZOMBIE_ATTACK_COOLDOWN; setZombieState(z, "idle"); }
+    if (enemyAnimDone(e)) { e.attackCooldown = t.attackCooldown; setEnemyState(e, "idle"); }
     return;
   }
 
   // Verfolgen, wenn der Spieler auf seiner Plattform ist
-  if (playerNear && Math.abs(dx) < ZOMBIE_AGGRO_RANGE) {
-    z.dir = dx >= 0 ? 1 : -1;
-    if (gap < ZOMBIE_ATTACK_GAP) {
-      if (z.attackCooldown === 0) setZombieState(z, "attack");
-      else setZombieState(z, "idle");
+  if (playerNear && Math.abs(dx) < t.aggroRange) {
+    e.dir = dx >= 0 ? 1 : -1;
+    e.pauseTicks = 0;
+    if (gap < t.attackGap * S) {
+      setEnemyState(e, e.attackCooldown === 0 ? "attack" : "idle");
       return;
     }
-    const before = z.x;
-    z.x += z.dir * ZOMBIE_CHASE_SPEED;
-    clampToPlatform(z);
-    setZombieState(z, z.x === before ? "idle" : "walk"); // an der Kante: stehen bleiben
-    z.pauseTicks = 0;
+    const before = e.x;
+    e.x += e.dir * t.chaseSpeed;
+    clampToPlatform(e);
+    setEnemyState(e, e.x === before ? "idle" : "chase"); // an der Kante: stehen bleiben
     return;
   }
 
   // Patrouille: hin und her, an jeder Kante kurz warten und umdrehen
-  if (z.pauseTicks > 0) {
-    setZombieState(z, "idle");
-    z.pauseTicks--;
-    if (z.pauseTicks === 0) z.dir *= -1;
+  if (e.pauseTicks > 0) {
+    setEnemyState(e, "idle");
+    e.pauseTicks--;
+    if (e.pauseTicks === 0) e.dir *= -1;
     return;
   }
-  setZombieState(z, "walk");
-  z.x += z.dir * ZOMBIE_PATROL_SPEED;
-  if (z.x <= z.minX && z.dir < 0) { z.x = z.minX; z.pauseTicks = ZOMBIE_EDGE_PAUSE; }
-  else if (z.x >= z.maxX && z.dir > 0) { z.x = z.maxX; z.pauseTicks = ZOMBIE_EDGE_PAUSE; }
+  setEnemyState(e, "walk");
+  e.x += e.dir * t.patrolSpeed;
+  if (e.x <= e.minX && e.dir < 0) { e.x = e.minX; e.pauseTicks = ENEMY_EDGE_PAUSE; }
+  else if (e.x >= e.maxX && e.dir > 0) { e.x = e.maxX; e.pauseTicks = ENEMY_EDGE_PAUSE; }
 }
 
-function hitZombie(z, b) {
-  if (z.state === "dead") return false;
-  z.hp--;
-  const fromDir = b.vx >= 0 ? 1 : -1;  // Richtung, in die die Kugel fliegt
-  if (z.hp <= 0) {
-    setZombieState(z, "dead");
-  } else {
-    setZombieState(z, "hurt");
-    z.knockVx = fromDir * 2.2;
-    z.dir = -fromDir;                  // dreht sich zum Schuetzen um
+// Gibt true zurueck, wenn die Kugel verbraucht ist (Treffer oder Block)
+function hitEnemy(e, b) {
+  if (e.state === "dead") return false;
+  const fromDir = b.vx >= 0 ? 1 : -1;   // Richtung, in die die Kugel fliegt
+  const steep = Math.abs(b.vy) > Math.abs(b.vx) * 1.3;
+
+  // Schild: blockt flache Schuesse von vorne -- nicht beim Zuschlagen,
+  // nicht von hinten und nicht steil von oben
+  const facingBullet = e.dir === -fromDir;
+  if (e.t.shield && facingBullet && !steep && e.state !== "attack" && e.state !== "hurt") {
+    e.knockVx = fromDir * 1.2;
+    spawnSparks(b.x, b.y, "#c9c9d6", 6);
+    return true;
   }
-  spawnSparks(b.x, b.y, "#7fbf6a", 4);
+
+  e.hp--;
+  spawnSparks(b.x, b.y, e.t.hitColor, 4);
+  if (e.hp <= 0) {
+    setEnemyState(e, "dead");
+    if (e.t.crumble) spawnDebris(e.x + e.w / 2, e.y + e.h / 2, e.t.hitColor, 14);
+  } else {
+    setEnemyState(e, "hurt");
+    e.knockVx = fromDir * 2.2;
+    e.dir = -fromDir;                    // dreht sich zum Schuetzen um
+  }
   return true;
 }
 
@@ -531,8 +598,8 @@ function updateBullets() {
       b.dist += BULLET_SPEED / SUB;
       if (b.dist > BULLET_RANGE || b.x < 0 || b.x > LEVEL_WIDTH || b.y < 0 || b.y > H) { b.dead = true; break; }
       if (GROUND.some(r => pointInRect(b.x, b.y, r))) { b.dead = true; spawnSparks(b.x, b.y, "#d4d06d", 3); break; }
-      for (const z of enemies) {
-        if (z.state !== "dead" && pointInRect(b.x, b.y, z) && hitZombie(z, b)) { b.dead = true; break; }
+      for (const e of enemies) {
+        if (e.state !== "dead" && pointInRect(b.x, b.y, e) && hitEnemy(e, b)) { b.dead = true; break; }
       }
     }
   }
@@ -549,11 +616,23 @@ function spawnSparks(x, y, color, n) {
   }
 }
 
+// Knochen-Splitter: fallen wie Huelsen auf die Plattform und bleiben kurz liegen
+function spawnDebris(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    particles.push({
+      type: "debris", color,
+      x: x + (Math.random() - 0.5) * 16, y: y + (Math.random() - 0.5) * 30,
+      vx: (Math.random() - 0.5) * 3.5, vy: -1 - Math.random() * 3,
+      life: 100 + Math.random() * 60, maxLife: 160,
+    });
+  }
+}
+
 function updateParticles() {
   for (const p of particles) {
     p.life--;
     if (p.type === "spark") { p.x += p.vx; p.y += p.vy; p.vy += 0.15; continue; }
-    // Huelse: Schwerkraft, auf Plattformen aufkommen, kurz abprallen, liegen bleiben
+    // Huelse/Splitter: Schwerkraft, auf Plattformen aufkommen, kurz abprallen, liegen bleiben
     p.vy += 0.25;
     p.x += p.vx; p.y += p.vy;
     for (const r of GROUND) {
@@ -632,8 +711,8 @@ function update() {
   updateAim();
   updateGun();
   updateBullets();
-  for (const z of enemies) updateZombie(z);
-  enemies = enemies.filter(z => !z.removed);
+  for (const e of enemies) updateEnemy(e);
+  enemies = enemies.filter(e => !e.removed);
   updateParticles();
   updateHUD();
 }
@@ -713,30 +792,30 @@ function draw() {
   ctx.translate(-Math.round(cameraX), 0);
   const levelY = H - levelImg.naturalHeight;
   ctx.drawImage(levelImg, 0, levelY);
-  for (const z of enemies) drawZombie(z);
+  for (const e of enemies) drawEnemy(e);
   drawParticles();
   drawPlayer(player.x, player.y, 1);
   drawBullets();
   ctx.restore();
 }
 
-function drawZombie(z) {
-  const a = ZOMBIE_ANIMS[z.state];
-  if (!a.img.naturalWidth) { ctx.fillStyle = "#3a8"; ctx.fillRect(z.x, z.y, z.w, z.h); return; }
-  const f = zombieFrame(z);
-  const size = ZOMBIE_FRAME * ZOMBIE_SCALE;
-  const dx = Math.round(z.x + z.w / 2 - size / 2);
-  const dy = Math.round(z.y + z.h - ZOMBIE_FEET_Y * ZOMBIE_SCALE);
-  ctx.globalAlpha = Math.max(0, z.alpha);
-  if (z.dir > 0) {
-    // Sprite schaut nach links -> fuer rechts horizontal spiegeln
+function drawEnemy(e) {
+  const a = e.t.anims[e.state];
+  if (!a.img.naturalWidth) { ctx.fillStyle = "#3a8"; ctx.fillRect(e.x, e.y, e.w, e.h); return; }
+  const f = enemyFrame(e);
+  const size = ENEMY_FRAME * ENEMY_SCALE;
+  const dx = Math.round(e.x + e.w / 2 - size / 2);
+  const dy = Math.round(e.y + e.h - ENEMY_FEET_Y * ENEMY_SCALE);
+  ctx.globalAlpha = Math.max(0, e.alpha);
+  if (e.dir > 0) {
+    // Sprites schauen nach links -> fuer rechts horizontal spiegeln
     ctx.save();
     ctx.translate(dx + size, dy);
     ctx.scale(-1, 1);
-    ctx.drawImage(a.img, f * ZOMBIE_FRAME, 0, ZOMBIE_FRAME, ZOMBIE_FRAME, 0, 0, size, size);
+    ctx.drawImage(a.img, f * ENEMY_FRAME, 0, ENEMY_FRAME, ENEMY_FRAME, 0, 0, size, size);
     ctx.restore();
   } else {
-    ctx.drawImage(a.img, f * ZOMBIE_FRAME, 0, ZOMBIE_FRAME, ZOMBIE_FRAME, dx, dy, size, size);
+    ctx.drawImage(a.img, f * ENEMY_FRAME, 0, ENEMY_FRAME, ENEMY_FRAME, dx, dy, size, size);
   }
   ctx.globalAlpha = 1;
 }

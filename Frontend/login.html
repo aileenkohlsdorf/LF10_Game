@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Undead</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen&display=swap">
+<link rel="stylesheet" href="ui.css">
+<link rel="stylesheet" href="login.css">
+</head>
+<body class="login-page">
+<div class="login-bg" aria-hidden="true"></div>
+
+<div class="ui-layer" id="login-ui">
+  <section class="ui-screen">
+    <h1 class="ui-title">Undead</h1>
+    <div class="ui-panel login-panel">
+      <div class="ui-tabs" role="tablist">
+        <button type="button" class="ui-tab" role="tab" data-mode="login">Anmelden</button>
+        <button type="button" class="ui-tab" role="tab" data-mode="register">Registrieren</button>
+      </div>
+      <form id="auth-form" class="ui-form" novalidate>
+        <label class="ui-field">
+          <span>Benutzername</span>
+          <input id="auth-user" type="text" autocomplete="username" maxlength="16" spellcheck="false">
+        </label>
+        <label class="ui-field">
+          <span>Passwort</span>
+          <input id="auth-pass" type="password" autocomplete="current-password">
+        </label>
+        <label class="ui-field" id="field-pass2" hidden>
+          <span>Passwort wiederholen</span>
+          <input id="auth-pass2" type="password" autocomplete="new-password">
+        </label>
+        <label class="ui-check">
+          <input id="auth-remember" type="checkbox" checked>
+          <span class="ui-check-box" aria-hidden="true"></span>
+          <span>Angemeldet bleiben</span>
+        </label>
+        <p id="auth-status" class="ui-status" role="alert"></p>
+        <button type="submit" id="auth-submit" class="ui-btn"><span>Anmelden</span></button>
+      </form>
+    </div>
+  </section>
+</div>
+
+<script src="js/ui-core.js"></script>
+<script src="js/login.js"></script>
+</body>
+</html>

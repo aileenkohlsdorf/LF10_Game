@@ -1,0 +1,17 @@
+/* Nur fuer login.html */
+html, body { height: 100%; margin: 0; overflow: hidden; background: #17101c; }
+.login-bg {
+  position: fixed; inset: 0;
+  background: var(--img-login-bg) repeat-x 0 50% / auto 100%;
+  image-rendering: pixelated;
+  animation: login-pan 90s linear infinite alternate;
+}
+/* dunkler Nebel ueber dem Wald, damit das Panel lesbar bleibt */
+.login-bg::after {
+  content: ""; position: absolute; inset: 0;
+  background: radial-gradient(ellipse 70% 80% at 50% 50%, rgba(44, 29, 53, 0.35), rgba(23, 16, 28, 0.9));
+}
+@keyframes login-pan { to { background-position: -960px 50%; } }
+.login-panel { width: 196px; }
+#auth-submit { align-self: center; }
+@media (prefers-reduced-motion: reduce) { .login-bg { animation: none; } }

@@ -331,7 +331,6 @@ function vibrantCopy(img) {
   return c;
 }
 
-// Alle Bilder der benutzten Gegnertypen (und der Wurfaxt) austauschen.
 // Einzelne Typen koennen mit "vibrant: false" ausgenommen werden (z. B. die Ratte).
 function makeEnemiesVibrant() {
   if (ENEMY_SATURATION === 1 && ENEMY_CONTRAST === 1 && ENEMY_HUE_SHIFT === 0) return;
@@ -440,7 +439,7 @@ const ctx = canvas.getContext("2d");
 ctx.imageSmoothingEnabled = false;
 const stage = document.getElementById("stage");
 // Klickt man waehrend des Spiels neben das Spiel (Fokus weg), pausiert es.
-stage.addEventListener("blur", () => { if (gameState === "playing") pauseGame(); });
+window.addEventListener("blur", () => { if (gameState === "playing") pauseGame(); });
 // Klicks auf Menues/Eingabefelder duerfen den Fokus nicht wegnehmen
 stage.addEventListener("click", (e) => { if (!e.target.closest(".screen")) stage.focus(); });
 
@@ -542,15 +541,17 @@ let jumpKeyWasDown = false;
 // --- Eingabe: Tastatur ---
 const keys = {};
 const controlKeys = new Set([" ", "arrowup", "arrowdown", "arrowleft", "arrowright", "w", "a", "s", "d", "r"]);
-stage.addEventListener("keydown", (e) => {
-  if (e.target.matches("input")) return; // Tippen im Login-Formular ist keine Spielsteuerung
+// Tasten auf dem ganzen Fenster abfragen: so reagiert das Level sofort,
+// auch wenn man direkt aus der Overworld kommt und noch nichts angeklickt hat.
+window.addEventListener("keydown", (e) => {
+  if (e.target.matches("input")) return;
   const k = e.key.toLowerCase();
   if (k === "escape" || k === "p") { e.preventDefault(); onPauseKey(); return; }
   if (gameState !== "playing") return; // in Menues normale Tastenbedienung (Tab, Enter, Leertaste)
   keys[k] = true;
   if (controlKeys.has(k)) e.preventDefault();
 });
-stage.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
+window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
 
 // --- Eingabe: Maus (Zielen + Schiessen) ---
 // Mausposition in Canvas-Pixeln; der Canvas wird per CSS skaliert, darum umrechnen.
@@ -1813,93 +1814,37 @@ function loop(t) {
   animTimer += t - lastT;
   lastT = t;
   update();
-  if (gameState === "auth" || gameState === "menu") menuCamera(t);
   draw();
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
 
 // =====================================================================
-// UI: Login/Registrieren, Hauptmenue, Pause, Game Over
+// UI im Level: HUD, Pause, Game Over
+// (Anmelden passiert vorher auf login.html, das Level startet direkt)
 // =====================================================================
-// Spielzustaende: "auth" -> "menu" -> "playing" <-> "paused", "gameover"
-let gameState = "auth";
+// Spielzustaende: "playing" <-> "paused", "gameover"
+let gameState = "playing";
 
-// --- Backend ----------------------------------------------------------
-// Adresse des FastAPI-Servers (uvicorn startet standardmaessig auf Port 8000)
+// Seite der Overworld (dorthin fuehrt "Zur Karte")
+const OVERWORLD_PAGE = "overworld.html";
+
+// --- Backend (fuer completeLevel) ---------------------------------------
+// Der Token kommt vom Login auf login.html (gleicher Speicher-Schluessel).
 const API_BASE = "http://127.0.0.1:8000";
-// Der Prototyp im Chat kann keinen lokalen Server erreichen und benutzt
-// darum ein nachgebautes Backend im Browser (window.USE_MOCK_API = true).
-const USE_MOCK_API = window.USE_MOCK_API === true;
-
-class ApiError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
-}
-
-async function api(path, { method = "GET", body, auth = false } = {}) {
-  if (USE_MOCK_API) return mockApi(path, method, body, auth ? session.token : null);
-  const headers = {};
-  if (body) headers["Content-Type"] = "application/json";
-  if (auth && session.token) headers["token"] = session.token; // Backend erwartet Header "token"
-  let res;
-  try {
-    res = await fetch(API_BASE + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
-  } catch {
-    throw new ApiError(0, "Server nicht erreichbar. Läuft das Backend?");
-  }
-  let data = {};
-  try { data = await res.json(); } catch { /* leere Antwort */ }
-  if (!res.ok) {
-    // FastAPI: detail ist ein Text (HTTPException) oder eine Liste (Validierungsfehler)
-    const msg = typeof data.detail === "string" ? data.detail : "Eingabe wurde vom Server abgelehnt.";
-    throw new ApiError(res.status, msg);
-  }
-  return data;
-}
-
-// Nachbau der Backend-Antworten, nur fuer den Prototyp (Daten bleiben im Browser)
-function mockApi(path, method, body, token) {
-  const load = (k) => { try { return JSON.parse(localStorage.getItem(k)) || {}; } catch { return {}; } };
-  const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* egal */ } };
-  const users = load("mock_users"), sessions = load("mock_sessions");
-  return new Promise((resolve, reject) => setTimeout(() => {
-    if (path === "/auth/register") {
-      if (users[body.username]) return reject(new ApiError(400, "Username ist bereits vergeben."));
-      users[body.username] = body.password; store("mock_users", users);
-      return resolve({ message: "Account erfolgreich erstellt." });
-    }
-    if (path === "/auth/login") {
-      if (users[body.username] !== body.password) return reject(new ApiError(401, "Username oder Passwort ist falsch."));
-      const t = Math.random().toString(36).slice(2);
-      sessions[t] = body.username; store("mock_sessions", sessions);
-      return resolve({ message: "Login erfolgreich!", token: t });
-    }
-    if (path === "/users/me") {
-      if (!sessions[token]) return reject(new ApiError(401, "Ungültiger Token."));
-      return resolve({ id: 1, username: sessions[token] });
-    }
-    if (path === "/auth/logout") {
-      delete sessions[token]; store("mock_sessions", sessions);
-      return resolve({ message: "Logout erfolgreich!" });
-    }
-    reject(new ApiError(404, "Not Found"));
-  }, 350));
-}
-
-// --- Sitzung (Token merken) --------------------------------------------
 const TOKEN_KEY = "zombie_token";
-const session = { token: null, username: null, guest: false };
-function saveToken(token, remember) {
-  try {
-    localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY);
-    (remember ? localStorage : sessionStorage).setItem(TOKEN_KEY, token);
-  } catch { /* Speicher gesperrt: dann eben nur fuer diese Sitzung */ }
-}
 function readToken() {
   try { return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY); } catch { return null; }
 }
-function clearToken() {
-  try { localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); } catch { /* egal */ }
+async function api(path, { method = "GET", body, auth = false } = {}) {
+  const headers = {};
+  if (body) headers["Content-Type"] = "application/json";
+  if (auth) headers["token"] = readToken() || "";
+  const res = await fetch(API_BASE + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  let data = {};
+  try { data = await res.json(); } catch { /* leere Antwort */ }
+  if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Fehler ${res.status}`);
+  return data;
 }
 
 // --- Sprites fuer das UI an CSS uebergeben ------------------------------
@@ -1947,7 +1892,7 @@ let hintTimer = null;
 function showScreen(name) {
   gameState = name === "pause" ? "paused" : name === "none" ? "playing" : name;
   for (const [key, el] of Object.entries(screens)) el.hidden = key !== name;
-  hudEl.hidden = !(gameState === "playing" || gameState === "paused");
+  hudEl.hidden = false;
   stage.classList.toggle("in-menu", gameState !== "playing");
   if (gameState !== "playing") hintEl.classList.remove("show");
   if (gameState !== "playing") { mouse.down = false; shotQueued = false; for (const k in keys) keys[k] = false; }
@@ -1961,7 +1906,9 @@ function showScreen(name) {
 }
 
 function startGame() {
-  restart();
+  // Beim allerersten Start sind die Bilder evtl. noch nicht geladen; das
+  // Level ist dann ohnehin frisch. Neustart nur, wenn alles bereit ist.
+  if (assetsReady()) restart();
   lastHudKey = ""; lastHudLives = null; lastHudReserve = null;
   updateHUD();
   showScreen("none");
@@ -1972,6 +1919,7 @@ function startGame() {
 }
 function pauseGame() { if (gameState === "playing") showScreen("pause"); }
 function resumeGame() { showScreen("none"); stage.focus(); }
+function toOverworld() { window.location.href = OVERWORLD_PAGE; }
 
 function onPauseKey() {
   if (gameState === "playing") return pauseGame();
@@ -1994,141 +1942,28 @@ function closeConfirm(screenEl) {
   screenEl.querySelector("[data-autofocus]").focus({ preventScroll: true });
 }
 
-// Im Menue faehrt die Kamera langsam uebers Level
-const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-function menuCamera(t) {
-  const range = Math.max(0, LEVEL_WIDTH - W);
-  cameraX = reduceMotion ? range / 2 : range * (0.5 - 0.5 * Math.cos(t / 18000));
-}
-
-// --- Login / Registrieren ----------------------------------------------
-const authForm = document.getElementById("auth-form");
-const authTabs = document.querySelectorAll(".tab");
-const authError = document.getElementById("auth-error");
-const authSubmit = document.getElementById("auth-submit");
-const userInput = document.getElementById("auth-user");
-const passInput = document.getElementById("auth-pass");
-const pass2Input = document.getElementById("auth-pass2");
-const pass2Field = document.getElementById("field-pass2");
-const rememberInput = document.getElementById("auth-remember");
-let authMode = "login";
-
-function setAuthMode(mode) {
-  authMode = mode;
-  authTabs.forEach(t => t.setAttribute("aria-selected", String(t.dataset.mode === mode)));
-  pass2Field.hidden = mode !== "register";
-  passInput.autocomplete = mode === "register" ? "new-password" : "current-password";
-  authSubmit.querySelector("span").textContent = mode === "register" ? "Registrieren" : "Anmelden";
-  setAuthMessage("");
-}
-function setAuthMessage(text, kind = "error") {
-  authError.textContent = text;
-  authError.dataset.kind = kind;
-}
-authTabs.forEach(t => t.addEventListener("click", () => { setAuthMode(t.dataset.mode); userInput.focus(); }));
-
-function validate(username, password, password2) {
-  if (!username) return "Gib einen Benutzernamen ein.";
-  if (!password) return "Gib ein Passwort ein.";
-  if (authMode === "register") {
-    if (username.length < 3 || username.length > 16) return "Benutzername: 3 bis 16 Zeichen.";
-    if (password.length < 4) return "Passwort: mindestens 4 Zeichen.";
-    if (password !== password2) return "Die Passwörter stimmen nicht überein.";
-  }
-  return null;
-}
-
-authForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  if (authSubmit.disabled) return;
-  const username = userInput.value.trim();
-  const password = passInput.value;
-  const problem = validate(username, password, pass2Input.value);
-  if (problem) return setAuthMessage(problem);
-
-  authSubmit.disabled = true;
-  setAuthMessage(authMode === "register" ? "Konto wird erstellt …" : "Anmelden …", "info");
-  try {
-    if (authMode === "register") await api("/auth/register", { method: "POST", body: { username, password } });
-    const data = await api("/auth/login", { method: "POST", body: { username, password } });
-    session.token = data.token; session.username = username; session.guest = false;
-    saveToken(data.token, rememberInput.checked);
-    passInput.value = ""; pass2Input.value = "";
-    setAuthMessage("");
-    enterMenu();
-  } catch (err) {
-    setAuthMessage(err.message);
-  } finally {
-    authSubmit.disabled = false;
-  }
-});
-
-// --- Hauptmenue ---------------------------------------------------------
-const menuUser = document.getElementById("menu-user");
-function enterMenu() {
-  menuUser.textContent = session.guest ? "Du spielst als Gast." : `Angemeldet als ${session.username}`;
-  screens.menu.querySelector(".confirm-text").textContent = session.guest ? "Zurück zur Anmeldung?" : "Wirklich abmelden?";
-  showScreen("menu");
-}
-async function logout() {
-  if (session.token) {
-    try { await api("/auth/logout", { method: "POST", auth: true }); } catch { /* lokal trotzdem abmelden */ }
-  }
-  clearToken();
-  session.token = null; session.username = null; session.guest = false;
-  setAuthMode("login");
-  showScreen("auth");
-}
-
 // --- Alle Buttons ueber data-action verdrahten -------------------------
 const ACTIONS = {
-  "play": () => {
-        window.location.href = "overworld.html";
-    },
-  "ask-logout": () => openConfirm(screens.menu),
-  "logout": logout,
   "resume": resumeGame,
   "restart": startGame,
-  "ask-menu": () => openConfirm(screens.pause),
-  "to-menu": enterMenu,
+  "ask-map": () => openConfirm(screens.pause),
+  "to-map": toOverworld,
   "cancel": (btn) => closeConfirm(btn.closest(".screen")),
 };
 document.querySelectorAll("[data-action]").forEach(btn => {
   btn.addEventListener("click", () => ACTIONS[btn.dataset.action](btn));
 });
 
-// --- Start: gespeicherten Token pruefen --------------------------------
-setAuthMode("login");
-
-(async () => {
-  const token = readToken();
-
-  if (!token) {
-    showScreen("auth");
-    return;
-  }
-
-  session.token = token;
-
-  try {
-    const me = await api("/users/me", { auth: true });
-    session.username = me.username;
-
-    const params = new URLSearchParams(window.location.search);
-    const level = params.get("level");
-
-    if (level === "1") {
-      startGame();
-    } else {
-      enterMenu();
-    }
-
-  } catch (err) {
-    if (err.status === 401) {
-      clearToken();
-    }
-
-    session.token = null;
-    showScreen("auth");
-  }
-})();
+// --- Start ----------------------------------------------------------------
+// Das Level darf nur aus der Overworld geoeffnet werden (index.html?level=1)
+// und nur, wenn man angemeldet ist. Sonst geht es zur Login-Seite; die
+// leitet Angemeldete automatisch weiter zur Overworld.
+// (Live Server / http.server oeffnen beim Start index.html -> landet so
+//  trotzdem zuerst beim Login.)
+const LOGIN_PAGE = "login.html";
+const cameFromOverworld = new URLSearchParams(window.location.search).has("level");
+if (!readToken() || !cameFromOverworld) {
+  window.location.replace(LOGIN_PAGE);
+} else {
+  startGame();
+}

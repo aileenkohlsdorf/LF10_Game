@@ -1,0 +1,123 @@
+/* =====================================================================
+   ui.css – Pixel-UI fuer Login-Seite und Overworld-Menue
+   Farben aus den UI-Sprites abgeleitet. Alle Klassen beginnen mit "ui-"
+   bzw. stehen in .ui-layer, damit nichts mit der Overworld kollidiert.
+   ===================================================================== */
+:root {
+  --ui-ink: #2c1d35;
+  --ui-slate: #47405a;
+  --ui-stone: #998b8f;
+  --ui-bone: #c7bba7;
+  --ui-cream: #f5e9bb;
+  --ui-blood: #ad5258;
+  --ui-white: #f7f5f6;
+  --ui-error: #e0868b;
+  --ui-font: "Silkscreen", "Courier New", monospace;
+}
+
+/* UI-Ebene: 480x270 UI-Pixel, per JS auf das Fenster skaliert */
+.ui-layer {
+  position: fixed; left: 50%; top: 50%; width: 480px; height: 270px;
+  transform-origin: 50% 50%; z-index: 1000;
+  font-family: var(--ui-font); font-size: 8px; line-height: 10px; color: var(--ui-bone);
+  -webkit-font-smoothing: none;
+}
+.ui-layer *, .ui-layer *::before, .ui-layer *::after { box-sizing: border-box; }
+.ui-layer [hidden] { display: none !important; }
+.ui-layer .ui-btn, .ui-layer .ui-icon-btn, .ui-layer .ui-panel, .ui-layer .ui-check-box { image-rendering: pixelated; }
+
+.ui-screen {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  cursor: var(--menu-cursor, default);
+}
+
+.ui-title {
+  margin: 0 0 4px; font-size: 40px; line-height: 40px; font-weight: 400; color: var(--ui-bone);
+  text-shadow:
+    -1px 0 0 var(--ui-ink), 1px 0 0 var(--ui-ink), 0 -1px 0 var(--ui-ink),
+    0 2px 0 var(--ui-ink), 0 4px 0 var(--ui-blood), 0 5px 0 var(--ui-ink);
+}
+.ui-layer h2 {
+  margin: 0 0 2px; font-size: 16px; line-height: 16px; font-weight: 400;
+  color: var(--ui-cream); text-shadow: 0 1px 0 var(--ui-ink); text-align: center;
+}
+.ui-text { margin: 0; text-align: center; color: var(--ui-bone); text-shadow: 0 1px 0 var(--ui-ink); max-width: 150px; }
+
+/* Panel = Inventory_1.png als 9-Slice */
+.ui-panel {
+  border: 7px solid transparent;
+  border-image: var(--img-panel) 7 fill / 7px stretch;
+  padding: 4px 8px 6px;
+}
+.ui-stack { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.ui-menu-panel { min-width: 120px; padding: 6px 14px 8px; }
+
+/* Tabs + Formular */
+.ui-tabs { display: flex; justify-content: center; gap: 12px; margin-bottom: 4px; }
+.ui-tab {
+  font: inherit; background: none; border: 0; padding: 0 0 1px; cursor: inherit;
+  color: var(--ui-stone); text-shadow: 0 1px 0 var(--ui-ink); border-bottom: 1px solid transparent;
+}
+.ui-tab[aria-selected="true"] { color: var(--ui-cream); border-bottom-color: var(--ui-cream); }
+.ui-tab:hover { color: var(--ui-bone); }
+.ui-form { display: flex; flex-direction: column; gap: 4px; }
+.ui-field { display: flex; flex-direction: column; gap: 1px; }
+.ui-field > span { text-shadow: 0 1px 0 var(--ui-ink); }
+.ui-field input {
+  font: inherit; color: var(--ui-cream); caret-color: var(--ui-cream);
+  height: 14px; width: 100%; padding: 0 3px; margin: 0;
+  background: var(--ui-ink); border: 1px solid var(--ui-slate); border-bottom-color: var(--ui-stone);
+  border-radius: 0; outline: none; cursor: text;
+}
+.ui-field input:focus { border-color: var(--ui-bone); }
+
+.ui-check { display: flex; align-items: center; gap: 4px; cursor: inherit; align-self: flex-start; margin-top: 1px; }
+.ui-check input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+.ui-check-box { position: relative; width: 7px; height: 7px; flex: none; background: var(--img-check-body) no-repeat 0 0 / 7px 7px; }
+.ui-check input:checked + .ui-check-box::after {
+  content: ""; position: absolute; left: 1px; top: -1px; width: 7px; height: 5px;
+  background: var(--img-check-anim) no-repeat 0 0 / 35px 5px;
+  animation: ui-tick 0.25s steps(4, jump-none) forwards;
+}
+@keyframes ui-tick { from { background-position: 0 0; } to { background-position: -28px 0; } }
+.ui-check input:focus-visible + .ui-check-box { outline: 1px solid var(--ui-cream); outline-offset: 1px; }
+
+.ui-status { margin: 0; min-height: 10px; text-align: center; color: var(--ui-bone); text-shadow: 0 1px 0 var(--ui-ink); max-width: 170px; }
+.ui-status[data-kind="error"] { color: var(--ui-error); }
+.ui-status[data-kind="ok"] { color: #a8d8a0; }
+
+/* Sprite-Buttons (76x21, gedrueckt 76x19 unten ausgerichtet) */
+.ui-btn {
+  --up: var(--img-blank-up); --down: var(--img-blank-down);
+  width: 76px; height: 21px; flex: none; border: 0; margin: 0; padding: 0 0 4px; cursor: inherit;
+  background: var(--up) no-repeat 0 0 / 76px 21px;
+  display: flex; align-items: center; justify-content: center;
+  font: inherit; color: var(--ui-white); text-shadow: 1px 1px 0 #7a6c76;
+}
+.ui-btn-play { --up: var(--img-play-up); --down: var(--img-play-down); }
+.ui-btn-save { --up: var(--img-save-up); --down: var(--img-save-down); }
+.ui-btn-quit { --up: var(--img-quit-up); --down: var(--img-quit-down); }
+.ui-btn:hover { filter: brightness(1.08); }
+.ui-btn:active, .ui-btn:disabled { background: var(--down) no-repeat 0 2px / 76px 19px; padding: 2px 0; }
+.ui-btn:disabled { filter: saturate(0.6); }
+
+.ui-yes-no { display: flex; gap: 10px; margin-top: 2px; }
+.ui-icon-btn {
+  --up: var(--img-yes-up); --down: var(--img-yes-down);
+  width: 20px; height: 18px; border: 0; padding: 0; cursor: inherit;
+  background: var(--up) no-repeat 0 0 / 20px 18px;
+}
+.ui-btn-no { --up: var(--img-no-up); --down: var(--img-no-down); width: 18px; }
+.ui-icon-btn:active { background: var(--down) no-repeat 0 2px / 100% 16px; }
+.ui-icon-btn:hover { filter: brightness(1.1); }
+
+.ui-layer button:focus-visible { outline: 1px solid var(--ui-cream); outline-offset: 1px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-check input:checked + .ui-check-box::after { animation: none; background-position: -28px 0; }
+}
+
+/* abgedunkelter Hintergrund hinter dem Overworld-Menue */
+.ui-dim { position: fixed; inset: 0; z-index: 999; background: rgba(23, 16, 28, 0.62); }
+.ui-dim[hidden], .ui-layer[hidden] { display: none; }

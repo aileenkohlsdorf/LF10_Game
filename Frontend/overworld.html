@@ -13,18 +13,19 @@
             height: 100%;
             overflow: hidden;
             background: #111;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         #gameCanvas {
-            position: fixed;
-            left: 50%;
-            top: 50%;
-            transform: translate(-50%, -50%);
-
-            width: min(100vw, 177.78vh);
-            height: min(100vh, 56.25vw);
-
             display: block;
+
+            width: min(1100px, 100vw);
+            height: auto;
+
+            aspect-ratio: 16 / 9;
         }
     </style>
 </head>

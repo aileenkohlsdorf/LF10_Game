@@ -1,0 +1,2084 @@
+// =====================================================================
+// LEVEL 1 – Spiel-Logik
+// Kollisions-/Hazard-Daten wurden automatisch aus assets/level.png erkannt
+// (Farbanalyse: brauner/gruener Boden = Plattform, violett = Zacken).
+// Wenn ihr das Level in eurem Editor aendert, exportiert erneut als PNG
+// und lasst die Collision-Daten unten neu generieren (fragt einfach nach).
+// =====================================================================
+
+const GROUND_RECTS_RAW = [[2, 386, 156, 94], [18, 178, 92, 28], [114, 322, 92, 28], [210, 274, 92, 28], [226, 370, 188, 110], [450, 258, 156, 28], [450, 418, 252, 62], [786, 402, 172, 78], [818, 146, 92, 28], [834, 258, 92, 28], [930, 210, 92, 28], [994, 274, 284, 206]];
+const SPIKE_RECTS_RAW = [[166, 424, 18, 28], [198, 424, 18, 28], [422, 440, 18, 28], [502, 232, 18, 24], [710, 440, 18, 28], [758, 440, 18, 28], [966, 184, 18, 24], [966, 440, 18, 28]];
+const SECRET_TRIGGER_RAW = [798, 46, 132, 100];
+
+// Gegner-Platzierung: type = Eintrag aus ENEMY_TYPES, x = Startposition,
+// y = Oberkante der Plattform (beides in level.png-Koordinaten). Die passende
+// Plattform wird automatisch gesucht, der Gegner patrouilliert genau auf deren Breite.
+const ENEMY_SPAWNS = [
+  { type: "bigZombie",      x: 620,  y: 418 }, // breite Plattform in der Mitte (x 450–702)
+  { type: "smallZombie",    x: 256,  y: 274 }, // schwebende Plattform links (x 210–302)
+  { type: "smallZombie",    x: 1150, y: 274 }, // grosse Plattform ganz rechts (x 994–1278)
+  { type: "axeZombie",      x: 880,  y: 402 }, // Plattform mit den Baeumen (x 786–958), jagt den Spieler
+  { type: "rat",            x: 330,  y: 370 }, // Bodenstueck nach dem Start (x 226–414)
+  { type: "rat",            x: 64,   y: 178 }, // schwebende Plattform ganz oben links (x 18–110)
+  { type: "rat",            x: 880,  y: 258 }, // schwebende Plattform rechts (x 834–926)
+];
+
+// Aufsammel-Gegenstaende: type = Eintrag aus PICKUP_TYPES, x = Mitte,
+// y = Oberkante der Plattform (level.png-Koordinaten). room: "secret" = im
+// Geheimraum (Koordinaten in secret-room.png, Boden liegt dort bei y 34).
+const PICKUP_SPAWNS = [
+  { type: "ammo",  x: 160,  y: 322 },               // Plattform nach dem Start
+  { type: "ammo",  x: 470,  y: 258 },               // schwebend ueber dem grossen Zombie, vor den Zacken
+  { type: "heart", x: 40,   y: 178 },               // ganz oben links (bei der Ratte)
+  { type: "ammo",  x: 812,  y: 402 },               // Plattform mit den Baeumen (Axt-Zombie)
+  { type: "ammo",  x: 1004, y: 210 },               // schwebend rechts, hinter den Zacken
+  { type: "heart", x: 1250, y: 274 },               // Ende der grossen Plattform rechts
+  { type: "heart", x: 160,  y: 34, room: "secret" }, // Belohnung im Geheimraum
+  { type: "ammo",  x: 196,  y: 34, room: "secret" },
+];
+
+// --- Asset-Loader ---------------------------------------------------
+// Im Prototyp (eine einzelne HTML-Datei) liegen alle Bilder als data-URIs in
+// window.ASSET_MAP. Im normalen Projekt ist die Map leer -> echte Dateipfade.
+const ASSET_MAP = window.ASSET_MAP || {};
+function asset(path) { return ASSET_MAP[path] || path; }
+const allImages = [];
+let ready = 0;
+function loadImg(src) {
+  const img = new Image();
+  img.onload = onReady;
+  img.onerror = () => { console.warn("Bild nicht gefunden:", src); onReady(); };
+  img.src = asset(src);
+  allImages.push(img);
+  return img;
+}
+function assetsReady() { return ready >= allImages.length; }
+
+const levelImg = loadImg("assets/level.png");
+const secretImg = loadImg("assets/secret-room.png");
+const bgImg = loadImg("assets/background.png");
+
+// Charakter: 4 Sprite-Sheets, je 6 Frames nebeneinander (Idle/Run x Rechts/Links).
+// Die Haende kommen von der Pistole (die Pistolen-Sprites enthalten die Haende).
+const CHAR_FRAMES = 6;
+const idleRightImg = loadImg("assets/characters/idle_right.png");
+const idleLeftImg = loadImg("assets/characters/idle_left.png");
+const runRightImg = loadImg("assets/characters/run_right.png");
+const runLeftImg = loadImg("assets/characters/run_left.png");
+
+// --- Pistole ---------------------------------------------------------
+// Pro Richtung drei Sheets: idle-and-run (6), shoot (3), Reload (11).
+// Alle Koordinaten unten sind in Sprite-Pixeln (vor dem 2x-Hochskalieren):
+//   grip      = Punkt im Pistolen-Frame, der an die Hand-Position des Koerpers kommt
+//   muzzle    = Muendung im idle-Frame (dort startet die Kugel)
+//   shootOff / reloadOff = Versatz der anderen Sheets, damit sie deckungsgleich
+//               mit dem idle-Frame sitzen (die Frames sind unterschiedlich gross)
+// Werte per Pixelanalyse aus den PNGs ermittelt.
+const PISTOL_PATH = "assets/weapons/pistol/";
+function pistolSheet(dir, anim, frames) {
+  return { img: loadImg(`${PISTOL_PATH}Pistol_${dir}_${anim}-Sheet${frames}.png`), frames };
+}
+function pistolDir(file, cfg) {
+  return {
+    ...cfg,
+    idle: pistolSheet(file, "idle-and-run", 6),
+    shoot: pistolSheet(file, "shoot", 3),
+    reload: pistolSheet(file, "Reload", 11),
+  };
+}
+const GUN_DIRS = {
+  right: pistolDir("side",      { grip: [3, 5], muzzle: [8, 1.5],   shootOff: [0, 0],  reloadOff: [-3, -1] }),
+  left:  pistolDir("side-left", { grip: [4, 5], muzzle: [0, 1.5],   shootOff: [-2, 0], reloadOff: [-1, -1] }),
+  up:    pistolDir("up",        { grip: [2, 7], muzzle: [2.5, 0.5], shootOff: [0, 0],  reloadOff: [-12, -1] }),
+  down:  pistolDir("down",      { grip: [2, 3], muzzle: [2.5, 9],   shootOff: [0, 0],  reloadOff: [-4, -3] }),
+};
+// Hand-Position am Koerper (Sprite-Pixel): x je nach Blickrichtung, y = 4px ueber den Fuessen
+const HAND_X_RIGHT = 9, HAND_X_LEFT = 0, HAND_Y_FROM_BOTTOM = 4;
+
+const MAG_SIZE = 8;          // Schuss pro Magazin
+const MAX_RESERVE = 50;      // so viele Patronen passen ins "Inventar" (wie im Backend)
+const START_RESERVE = 10;    // Reserve beim Levelstart
+const AMMO_PER_PICKUP = 10;  // eine aufgesammelte Patrone = 10 Schuss
+const SHOT_COOLDOWN = 14;    // Frames zwischen zwei Schuessen
+const SHOOT_ANIM_TICKS = 3;  // Frames pro Schuss-Animationsbild
+const RELOAD_ANIM_TICKS = 5; // Frames pro Nachlade-Animationsbild (11 Bilder ≈ 0,9 s)
+const BULLET_SPEED = 9;
+const BULLET_RANGE = 270;    // ≈ eine breite Plattform: nah ran muss man, aber nicht direkt davor
+
+// --- Kugeln ------------------------------------------------------------
+const BULLET_PATH = "assets/bullets/";
+const bulletImg = loadImg(`${BULLET_PATH}Pistol-bullet_Bullet.png`);
+const casingImg = loadImg(`${BULLET_PATH}Pistol-bullet_Casting.png`);
+
+// --- Gegner-Typen -------------------------------------------------------
+// Alle Gegner-Sheets: Frames a 64x64 nebeneinander, Figur schaut im Original
+// nach LINKS, Fuesse stehen im Frame auf y=48.
+const ENEMY_FRAME = 64, ENEMY_FEET_Y = 48;
+// Zeichen-Groesse aller Gegner (1 = Original). 1.5 -> ca. 46px hoch, Spieler ist 32px.
+// Tipp: 2 ergibt die schaerfsten Pixel (ganzzahlig), ist aber deutlich groesser.
+const ENEMY_SCALE = 1.5;
+
+// Bilder werden erst geladen, wenn ein Gegnertyp wirklich in ENEMY_SPAWNS
+// vorkommt (siehe loadEnemyAssets). Nicht benutzte Typen brauchen keine PNGs.
+function anim(path, frames, ticks, loop) { return { path, img: null, frames, ticks, loop }; }
+
+// Fuer eng zugeschnittene Sheets mit eigener Datei pro Blickrichtung
+// (Side = rechts, Side-left = links). anchor = x-Position des Kopfes im ersten
+// Frame (Sprite-Pixel); daran wird das Sprite ueber der Hitbox ausgerichtet.
+// mirror: true -> es gibt nur das linke Sheet, rechts wird es gespiegelt.
+function dirAnim(prefix, name, frames, ticks, loop, anchorR, anchorL, mirror = false) {
+  const left = { path: `${prefix}Side-left_${name}-Sheet${frames}.png`, img: null, frames, ticks, loop, anchor: anchorL };
+  const right = mirror
+    ? { ...left, mirror: true }
+    : { path: `${prefix}Side_${name}-Sheet${frames}.png`, img: null, frames, ticks, loop, anchor: anchorR };
+  return { r: right, l: left };
+}
+const Z = "assets/enemies/zombie/";
+const SK = "assets/enemies/skeleton/";
+
+const zombieWalk = anim(`${Z}Zombie_Default_Walk.png`, 6, 8, true);
+// Das Skelett hat kein eigenes Death-Sheet -> es zeigt kurz den Hurt-Frame und
+// zerfaellt dann in Knochen-Splitter (crumble).
+const skeletonHurt = anim(`${SK}Skeleton_Default_Hurt.png`, 2, 6, false);
+const skeletonDeath = { ...skeletonHurt, ticks: 8 };
+
+// Werte in Sprite-Pixeln (werden mit ENEMY_SCALE multipliziert):
+//   w/h          = Hitbox
+//   attackGap    = Abstand Koerper-zu-Koerper, ab dem er zuschlaegt
+//   attackReach  = wie weit der Schlag vor den Koerper reicht
+//   attackHitFrame = in welchem Frame der Attack-Animation der Treffer zaehlt
+const ENEMY_TYPES = {
+  zombie: {
+    anims: {
+      idle: anim(`${Z}Zombie_Default_Idle.png`, 6, 10, true),
+      walk: zombieWalk,
+      chase: zombieWalk,
+      attack: anim(`${Z}Zombie_Default_Attack1.png`, 6, 6, false),
+      hurt: anim(`${Z}Zombie_Default_Hurt.png`, 6, 4, false),
+      dead: anim(`${Z}Zombie_Default_Dead.png`, 6, 8, false),
+    },
+    w: 16, h: 30, hp: 3,
+    patrolSpeed: 0.5, chaseSpeed: 0.9, aggroRange: 130,
+    attackGap: 4, attackReach: 14, attackHitFrame: 2, attackCooldown: 45,
+    hitColor: "#7fbf6a", shield: false, crumble: false,
+  },
+  // Skelett mit Schwert: schneller, rennt beim Verfolgen, groessere Reichweite
+  skeleton: {
+    anims: {
+      idle: anim(`${SK}Skeleton_Default_Idle_Sword.png`, 6, 10, true),
+      walk: anim(`${SK}MP_Skeleton_Default_Walk_Sword.png`, 6, 8, true),
+      chase: anim(`${SK}Skeleton_Default_Run_Sword.png`, 6, 5, true),
+      attack: anim(`${SK}Skeleton_Default_Attack_Sword.png`, 6, 6, false),
+      hurt: skeletonHurt,
+      dead: skeletonDeath,
+    },
+    w: 14, h: 30, hp: 3,
+    patrolSpeed: 0.6, chaseSpeed: 1.4, aggroRange: 150,
+    attackGap: 9, attackReach: 20, attackHitFrame: 2, attackCooldown: 40,
+    hitColor: "#e8e4d8", shield: false, crumble: true,
+  },
+  // Skelett mit Schild: langsamer, blockt Kugeln von vorne (ausser beim Zuschlagen)
+  skeletonShield: {
+    anims: {
+      idle: anim(`${SK}Skeleton_Default_Idle_Sword_Shield.png`, 6, 10, true),
+      walk: anim(`${SK}MP_Skeleton_Default_Walk_Sword_Shield.png`, 6, 8, true),
+      chase: anim(`${SK}Skeleton_Default_X_Sword_Shield.png`, 6, 6, true),
+      attack: anim(`${SK}Skeleton_Default_Attack_Sword_Shield.png`, 6, 7, false),
+      hurt: skeletonHurt,
+      dead: skeletonDeath,
+    },
+    w: 16, h: 30, hp: 4,
+    patrolSpeed: 0.45, chaseSpeed: 1.0, aggroRange: 150,
+    attackGap: 9, attackReach: 20, attackHitFrame: 2, attackCooldown: 55,
+    hitColor: "#e8e4d8", shield: true, crumble: true,
+  },
+};
+// Axt-Zombie ("Jaeger"): eigene Sheets pro Blickrichtung (Side = rechts,
+// Side-left = links), Frames sind eng zugeschnitten und unterschiedlich breit.
+// anchor = x-Position des Kopfes im ersten Frame (Sprite-Pixel), daran wird
+// das Sprite ueber der Hitbox ausgerichtet, damit es beim Animationswechsel
+// nicht springt. Fuesse stehen immer am unteren Frame-Rand.
+const AXE = "assets/enemies/zombie-axe/";
+function axeAnim(name, frames, ticks, loop, anchorR, anchorL) {
+  return {
+    r: { path: `${AXE}Zombie_Axe_Side_${name}-Sheet${frames}.png`, img: null, frames, ticks, loop, anchor: anchorR },
+    l: { path: `${AXE}Zombie_Axe_Side-left_${name}-Sheet${frames}.png`, img: null, frames, ticks, loop, anchor: anchorL },
+  };
+}
+const axeWalk = axeAnim("Walk", 8, 8, true, 11.5, 8.5);
+// Second-Attack = Axt-Wurf (9 Frames, in Frame 3 fliegt die Axt los).
+// Die Frames 4–8 zeigen ihn OHNE Axt -> daraus werden "unbewaffnet stehen"
+// (Frame 4) und "unbewaffnet laufen" (Frames 5–8 als Schleife).
+const axeThrowSheet = axeAnim("Second-Attack", 9, 5, false, 16.5, 9.5);
+function subAnim(src, start, frames, ticks, loop, anchorR, anchorL) {
+  return {
+    r: { ...src.r, start, frames, sheetFrames: 9, ticks, loop, anchor: anchorR },
+    l: { ...src.l, start, frames, sheetFrames: 9, ticks, loop, anchor: anchorL },
+  };
+}
+ENEMY_TYPES.axeZombie = {
+  hunter: true,
+  directional: true,   // eigene Physik: Schwerkraft, springt, verlaesst seine Plattform
+  scale: 3,       // ganzzahlig -> scharfe Pixel, ca. 54px hoch (andere Gegner ~46px)
+  anims: {
+    idle: axeAnim("Idle", 6, 10, true, 11.7, 9.3),
+    walk: axeWalk,
+    chase: { r: { ...axeWalk.r, ticks: 5 }, l: { ...axeWalk.l, ticks: 5 } },
+    attack: axeAnim("First-Attack", 7, 6, false, 12.5, 11.5),
+    throw: axeThrowSheet,
+    unarmedIdle: subAnim(axeThrowSheet, 4, 1, 10, true, 18.5, 7.5),
+    unarmedWalk: subAnim(axeThrowSheet, 5, 4, 7, true, 18.5, 7.5),
+    dead: axeAnim("First-Death", 6, 8, false, 11.7, 14.3),
+  },
+  w: 8, h: 17, hp: 8,
+  patrolSpeed: 0.5, chaseSpeed: 1.6,
+  aggroRange: 300,   // ab hier nimmt er die Jagd auf ...
+  loseRange: 560,    // ... und gibt erst bei so viel Abstand wieder auf
+  jumpForce: -12.6, jumpSpeed: 2.6, jumpCooldown: 40,
+  attackGap: 3, attackReach: 9, attackHitFrame: 4, attackCooldown: 50,
+  // Axt-Wurf: nur aus mittlerer Distanz und ungefaehr auf gleicher Hoehe
+  throwMinDist: 100, throwMaxDist: 240, throwReleaseFrame: 3,
+  throwCooldown: 200,     // Frames nach dem Aufheben, bis er wieder wirft
+  unarmedMaxTicks: 420,   // spaetestens dann hat er wieder eine Axt
+  lostAxeTicks: 150,      // Axt in Abgrund gefallen -> so lange unbewaffnet, dann neue Axt
+  hitColor: "#8a2b35", shield: false, crumble: false,
+};
+
+// --- Wurfaxt (Projektil) ---
+// Thrown = drehende Axt im Flug, Landing = einschlagen mit Staub, Landed = steckt im Boden.
+// Landed passt genau auf den letzten Landing-Frame (Versatz landedOff, Sprite-Pixel).
+const THROWN_AXE = {
+  r: {
+    thrown: { img: loadImg(`${AXE}Axe_Side_Thrown-Sheet9.png`), frames: 9 },
+    landing: { img: loadImg(`${AXE}Axe_Side_Landing-Sheet5.png`), frames: 5 },
+    landed: loadImg(`${AXE}Axe_Side_Landed.png`),
+    landedOff: [0, 4],
+  },
+  l: {
+    thrown: { img: loadImg(`${AXE}Axe_Side-left_Thrown-Sheet9.png`), frames: 9 },
+    landing: { img: loadImg(`${AXE}Axe_Side-left_Landing-Sheet5.png`), frames: 5 },
+    landed: loadImg(`${AXE}Axe_Side-left_Landed.png`),
+    landedOff: [6, 4],
+  },
+};
+const AXE_SCALE = 3;
+const AXE_SPEED = 5;           // horizontale Fluggeschwindigkeit
+const AXE_GRAVITY = 0.2;       // Bogen
+const AXE_SPIN_TICKS = 3, AXE_LANDING_TICKS = 4;
+const AXE_HITBOX = 22;
+
+// --- Treffer-Effekt (Blutspritzer, wenn eine Kugel einen Gegner trifft) ---
+// Zwei Varianten a 3 Frames, es wird zufaellig eine gewaehlt.
+const HIT_FX = [
+  { img: loadImg("assets/effects/shot_1-Sheet3.png"), frames: 3 },
+  { img: loadImg("assets/effects/shot_2-Sheet3.png"), frames: 3 },
+];
+const HIT_FX_SCALE = 3, HIT_FX_TICKS = 4;
+
+// --- Farben der Gegner kraeftiger machen --------------------------------
+// Die Gegner-Sprites wirken neben dem satten Level etwas blass. Beim Start
+// wird jedes Gegner-Sheet einmal umgerechnet: Saettigung hoch, etwas mehr
+// Kontrast, und die grau-blaue Haut wird leicht Richtung Tuerkis verschoben,
+// damit sie zum Gras im Level passt. Blut/Rot bleibt rot, schwarze Umrisse
+// und weisse Effekt-Pixel bleiben, wie sie sind.
+// SATURATION/CONTRAST = 1 und HUE_SHIFT = 0 -> Originalfarben.
+const ENEMY_SATURATION = 2.4;
+const ENEMY_CONTRAST = 1.18;
+const ENEMY_HUE_SHIFT = -0.05;   // nur fuer Blau-/Grautoene (Farbkreis 0..1)
+
+function vibrantCopy(img) {
+  if (!img.naturalWidth) return img;
+  const c = document.createElement("canvas");
+  c.width = img.naturalWidth; c.height = img.naturalHeight;
+  const g = c.getContext("2d");
+  g.drawImage(img, 0, 0);
+  const data = g.getImageData(0, 0, c.width, c.height);
+  const d = data.data;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] === 0) continue;
+    const r = d[i] / 255, gg = d[i + 1] / 255, b = d[i + 2] / 255;
+    const max = Math.max(r, gg, b), min = Math.min(r, gg, b);
+    let l = (max + min) / 2;
+    if (l < 0.12) continue;                  // Umrisse nicht anfassen
+    let h = 0, sat = 0;
+    if (max !== min) {
+      const dd = max - min;
+      sat = l > 0.5 ? dd / (2 - max - min) : dd / (max + min);
+      if (max === r) h = (gg - b) / dd + (gg < b ? 6 : 0);
+      else if (max === gg) h = (b - r) / dd + 2;
+      else h = (r - gg) / dd + 4;
+      h /= 6;
+    }
+    sat = Math.min(1, sat * ENEMY_SATURATION);
+    if (h > 0.4 && h < 0.75) h += ENEMY_HUE_SHIFT;
+    l = Math.min(1, Math.max(0, 0.5 + (l - 0.5) * ENEMY_CONTRAST));
+    // HSL -> RGB
+    const q = l < 0.5 ? l * (1 + sat) : l + sat - l * sat, p = 2 * l - q;
+    const hue = (t) => {
+      if (t < 0) t += 1; if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+    d[i] = Math.round(hue(h + 1 / 3) * 255);
+    d[i + 1] = Math.round(hue(h) * 255);
+    d[i + 2] = Math.round(hue(h - 1 / 3) * 255);
+  }
+  g.putImageData(data, 0, 0);
+  // damit der restliche Code das Canvas wie ein geladenes Bild behandeln kann
+  c.naturalWidth = c.width; c.naturalHeight = c.height;
+  return c;
+}
+
+// Alle Bilder der benutzten Gegnertypen (und der Wurfaxt) austauschen.
+// Einzelne Typen koennen mit "vibrant: false" ausgenommen werden (z. B. die Ratte).
+function makeEnemiesVibrant() {
+  if (ENEMY_SATURATION === 1 && ENEMY_CONTRAST === 1 && ENEMY_HUE_SHIFT === 0) return;
+  const done = new Map();
+  const conv = (img) => { if (!done.has(img)) done.set(img, vibrantCopy(img)); return done.get(img); };
+  const walk = (obj) => {
+    if (!obj || typeof obj !== "object") return;
+    for (const [k, v] of Object.entries(obj)) {
+      if (v instanceof Image) obj[k] = conv(v);
+      else if (!(v instanceof HTMLCanvasElement)) walk(v);
+    }
+  };
+  for (const type of new Set(ENEMY_SPAWNS.map(sp => sp.type))) {
+    const t = ENEMY_TYPES[type];
+    if (t && t.vibrant !== false) walk(t.anims);   // vibrant: false -> Originalfarben
+  }
+  walk(THROWN_AXE);
+}
+
+// --- Grosser Zombie: langsamer Tank auf der mittleren Plattform ---------
+// Schlag (First-Attack) im Nahkampf, Boden-Stampfer (Second-Attack) mit
+// Schockwelle: trifft alle, die auf seiner Plattform am Boden stehen ->
+// hochspringen zum Ausweichen. Zwei Tode (normal / blutig), zufaellig.
+const BIG = "assets/enemies/zombie-big/Zombie_Big_";
+ENEMY_TYPES.bigZombie = {
+  directional: true,
+  scale: 3,          // ca. 66px hoch
+  anims: {
+    idle: dirAnim(BIG, "Idle", 6, 10, true, 8, 7),
+    walk: dirAnim(BIG, "Walk", 8, 9, true, 8, 7),
+    chase: dirAnim(BIG, "Walk", 8, 6, true, 8, 7),
+    attack: dirAnim(BIG, "First-Attack", 8, 5, false, 9, 13),
+    slam: dirAnim(BIG, "Second-Attack", 15, 4, false, 7, 22),
+    dead: dirAnim(BIG, "First-Death", 7, 8, false, 9, 19),
+    dead2: dirAnim(BIG, "Second-Death", 8, 8, false, 9, 19),
+  },
+  deathAnims: ["dead", "dead2"],
+  w: 12, h: 21, hp: 10,
+  patrolSpeed: 0.4, chaseSpeed: 0.75, aggroRange: 150,
+  attackGap: 3, attackReach: 9, attackHitFrame: 3, attackCooldown: 55,
+  slam: { hitFrame: 3, range: 90, cooldown: 170, chance: 0.35 },
+  hitColor: "#8a2b35", shield: false, crumble: false,
+};
+
+// --- Kleiner Zombie: schnell, wenig Leben ------------------------------
+// Fuer Idle/Attack/First-Death gibt es nur Side-left -> rechts gespiegelt.
+const SMALL = "assets/enemies/zombie-small/Zombie_Small_";
+ENEMY_TYPES.smallZombie = {
+  directional: true,
+  scale: 2,          // ca. 30px hoch, etwas kleiner als der Spieler
+  anims: {
+    idle: dirAnim(SMALL, "Idle", 6, 9, true, 0, 4.4, true),
+    walk: dirAnim(SMALL, "Walk", 6, 7, true, 0, 6.5, true),
+    chase: dirAnim(SMALL, "Walk", 6, 4, true, 0, 6.5, true),
+    attack: dirAnim(SMALL, "First-Attack", 4, 6, false, 0, 5.3, true),
+    dead: dirAnim(SMALL, "First-Death", 6, 7, false, 0, 9.5, true),
+    dead2: dirAnim(SMALL, "Second-Death", 7, 7, false, 0, 8.3, true),
+  },
+  deathAnims: ["dead", "dead2"],
+  w: 8, h: 13, hp: 2,
+  patrolSpeed: 0.8, chaseSpeed: 1.9, aggroRange: 150,
+  attackGap: 2, attackReach: 7, attackHitFrame: 2, attackCooldown: 35,
+  hitColor: "#8a2b35", shield: false, crumble: false,
+};
+
+// --- Ratte: klein, flink, wenig Leben ----------------------------------
+// 64x64-Frames wie der alte Zombie (schaut nach links, Fuesse auf y=48).
+// Sniff ist nur 48px hoch (oben abgeschnitten, Fuesse auf y=32).
+// Verhalten: schnueffelt an den Kanten (Sniff), stellt sich kurz auf,
+// wenn sie dich bemerkt (Stand), rennt dann auf dich zu (Run) und beisst.
+const RAT = "assets/enemies/rat/Rat_Gray_";
+ENEMY_TYPES.rat = {
+  scale: 1,          // ca. 12px hoch, 40px lang -> deutlich kleiner als der Rest
+  anims: {
+    idle: anim(`${RAT}Idle.png`, 6, 9, true),
+    walk: anim(`${RAT}Walk.png`, 4, 8, true),
+    chase: anim(`${RAT}Run.png`, 6, 4, true),
+    sniff: { ...anim(`${RAT}Sniff.png`, 6, 8, true), fh: 48, feetY: 32 },
+    alert: anim(`${RAT}Stand.png`, 6, 5, false),
+    attack: anim(`${RAT}Attack.png`, 6, 5, false),
+    hurt: anim(`${RAT}Hurt.png`, 6, 3, false),
+    dead: anim(`${RAT}Dead.png`, 6, 7, false),
+  },
+  vibrant: false,       // Originalfarben, keine kraeftigeren Farben
+  pauseAnim: "sniff",   // statt Idle an den Plattformkanten
+  alertAnim: "alert",   // kurz aufrichten, wenn sie den Spieler bemerkt
+  w: 30, h: 11, hp: 2,
+  patrolSpeed: 0.7, chaseSpeed: 2.2, aggroRange: 160,
+  attackGap: 4, attackReach: 12, attackHitFrame: 3, attackCooldown: 40,
+  hitColor: "#8a2b35", shield: false, crumble: false,
+};
+
+// Nur die Bilder der Gegnertypen laden, die im Level vorkommen
+function loadEnemyAssets(obj) {
+  if (!obj || typeof obj !== "object" || obj instanceof Image) return;
+  if (obj.path && !obj.img) obj.img = loadImg(obj.path);
+  for (const v of Object.values(obj)) loadEnemyAssets(v);
+}
+for (const type of new Set(ENEMY_SPAWNS.map(sp => sp.type))) loadEnemyAssets(ENEMY_TYPES[type]?.anims);
+
+const ENEMY_EDGE_PAUSE = 50; // kurz stehen bleiben an der Plattformkante
+
+// --- Canvas / Fokus ----------------------------------------------------
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+const stage = document.getElementById("stage");
+// Klickt man waehrend des Spiels neben das Spiel (Fokus weg), pausiert es.
+stage.addEventListener("blur", () => { if (gameState === "playing") pauseGame(); });
+// Klicks auf Menues/Eingabefelder duerfen den Fokus nicht wegnehmen
+stage.addEventListener("click", (e) => { if (!e.target.closest(".screen")) stage.focus(); });
+
+const W = canvas.width, H = canvas.height;
+const GRAVITY = 0.6;
+const MOVE_SPEED = 3.3;
+const JUMP_FORCE = -11.5;
+const DOUBLE_JUMP_FORCE = -9.8;
+const GROUND_FRICTION = 0.78;
+
+let LEVEL_Y_OFFSET = 60;
+let LEVEL_WIDTH = 1280;
+let GROUND = [], SPIKES = [], SECRET_TRIGGER = null;
+function toRect([x, y, w, h]) { return { x, y: y + LEVEL_Y_OFFSET, w, h }; }
+
+let enemies = [], bullets = [], particles = [], axes = [];
+
+function onReady() {
+  ready++;
+  if (assetsReady()) {
+    LEVEL_Y_OFFSET = H - levelImg.naturalHeight;
+    LEVEL_WIDTH = levelImg.naturalWidth;
+    GROUND = GROUND_RECTS_RAW.map(toRect);
+    SPIKES = SPIKE_RECTS_RAW.map(toRect);
+    SECRET_TRIGGER = toRect(SECRET_TRIGGER_RAW);
+    player.x = 24;
+    player.y = GROUND[0].y - player.h;
+    makeEnemiesVibrant();
+    spawnEnemies();
+    spawnPickups();
+  }
+}
+
+// --- Spieler ---
+// Hitbox-Groesse an die Sprite-Proportionen angepasst (Sprite ist ~10x17px,
+// 2x hochskaliert gezeichnet -> 20x34).
+const SPRITE_SCALE = 2;
+const player = {
+  x: 24, y: 0, w: 20, h: 34,
+  vx: 0, vy: 0,
+  grounded: false, facing: 1,
+  jumpsUsed: 0,
+  lives: 5, maxLives: 5,
+  invulnFrames: 0,
+  inSecretRoom: false, returnX: 24, returnY: 0,
+};
+
+const gun = {
+  ammo: MAG_SIZE,
+  reserve: START_RESERVE, // Patronen im Inventar, nur damit kann man nachladen
+  state: "idle",     // "idle" | "shoot" | "reload"
+  tick: 0,
+  cooldown: 0,
+  flash: 0,
+  dir: "right",      // welche Pistolen-Sheets gerade benutzt werden
+  angle: 0,          // exakter Zielwinkel zur Maus (Kugel fliegt genau so)
+  aimHold: 0,        // nach einem Schuss kurz zur Maus schauen, auch beim Laufen
+};
+const AIM_HOLD_TICKS = 25;
+
+// --- Geheimraum-Geometrie (aus secret-room.png per Farberkennung ermittelt) ---
+// Boden-Oberkante bei y=34, Raum-Innenbereich x=34..221, schmale "Oeffnung"
+// (der Schacht nach unten) bei x=112..143 -- nur dort fuehrt S/Pfeil-runter
+// zurueck ins Hauptlevel.
+const SECRET_FLOOR_Y = 34;
+const SECRET_LEFT = 38;
+const SECRET_RIGHT = 217;
+const SECRET_OPENING = { xMin: 108, xMax: 147 };
+
+let cameraX = 0;
+let shakeTicks = 0; // Bildschirm-Wackeln (z. B. beim Boden-Stampfer)
+let gameOver = false;
+let jumpKeyWasDown = false;
+
+// --- Eingabe: Tastatur ---
+const keys = {};
+const controlKeys = new Set([" ", "arrowup", "arrowdown", "arrowleft", "arrowright", "w", "a", "s", "d", "r"]);
+stage.addEventListener("keydown", (e) => {
+  if (e.target.matches("input")) return; // Tippen im Login-Formular ist keine Spielsteuerung
+  const k = e.key.toLowerCase();
+  if (k === "escape" || k === "p") { e.preventDefault(); onPauseKey(); return; }
+  if (gameState !== "playing") return; // in Menues normale Tastenbedienung (Tab, Enter, Leertaste)
+  keys[k] = true;
+  if (controlKeys.has(k)) e.preventDefault();
+});
+stage.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
+
+// --- Eingabe: Maus (Zielen + Schiessen) ---
+// Mausposition in Canvas-Pixeln; der Canvas wird per CSS skaliert, darum umrechnen.
+const mouse = { x: 0, y: 0, down: false, active: false, moved: false };
+let shotQueued = false;
+function updateMousePos(e) {
+  const r = canvas.getBoundingClientRect();
+  mouse.x = (e.clientX - r.left) * (W / r.width);
+  mouse.y = (e.clientY - r.top) * (H / r.height);
+  mouse.active = true;
+}
+stage.addEventListener("mousemove", (e) => { updateMousePos(e); mouse.moved = true; });
+stage.addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return;
+  if (e.target.closest(".screen")) return; // Klick in ein Menue = kein Schuss
+  stage.focus();
+  updateMousePos(e);
+  mouse.down = true;
+  shotQueued = true; // kurze Klicks zwischen zwei Frames gehen so nicht verloren
+});
+window.addEventListener("mouseup", (e) => { if (e.button === 0) mouse.down = false; });
+stage.addEventListener("blur", () => { mouse.down = false; });
+
+
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+function pointInRect(px, py, r) {
+  return px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h;
+}
+
+function resolveGroundCollisions() {
+  player.x += player.vx;
+  for (const r of GROUND) {
+    if (rectsOverlap(player, r)) {
+      if (player.vx > 0) player.x = r.x - player.w;
+      else if (player.vx < 0) player.x = r.x + r.w;
+    }
+  }
+  player.y += player.vy;
+  player.grounded = false;
+  for (const r of GROUND) {
+    if (rectsOverlap(player, r)) {
+      if (player.vy > 0) { player.y = r.y - player.h; player.vy = 0; player.grounded = true; player.jumpsUsed = 0; }
+      else if (player.vy < 0) { player.y = r.y + r.h; player.vy = 0; }
+    }
+  }
+}
+
+function takeDamage(knockDir) {
+  if (player.invulnFrames > 0) return;
+  player.lives--;
+  player.invulnFrames = 70;
+  player.vx = knockDir * 5;
+  player.vy = -6;
+  if (player.lives <= 0) triggerGameOver();
+}
+
+function triggerGameOver() { gameOver = true; showScreen("gameover"); }
+// Setzt Spieler, Waffe und Gegner auf den Levelanfang zurueck
+function restart() {
+  player.x = 24; player.y = GROUND[0].y - player.h;
+  player.vx = 0; player.vy = 0; player.lives = 5; player.invulnFrames = 90;
+  player.inSecretRoom = false; player.jumpsUsed = 0;
+  gun.ammo = MAG_SIZE; gun.reserve = START_RESERVE; gun.state = "idle"; gun.tick = 0; gun.cooldown = 0; gun.flash = 0;
+  bullets = []; particles = []; floaters = [];
+  spawnEnemies();
+  spawnPickups();
+  gameOver = false;
+}
+
+function enterSecretRoom() {
+  player.returnX = player.x; player.returnY = player.y;
+  player.inSecretRoom = true;
+  player.x = secretImg.naturalWidth / 2 - player.w / 2;
+  player.y = 40; player.vx = 0; player.vy = 0;
+}
+function exitSecretRoom() {
+  player.inSecretRoom = false;
+  player.x = player.returnX; player.y = player.returnY;
+  player.vx = 0; player.vy = 0; player.grounded = true; player.jumpsUsed = 0;
+}
+
+// =====================================================================
+// GEGNER (Zombie, Skelett, Skelett mit Schild)
+// =====================================================================
+function findPlatform(x, topY) {
+  const r = GROUND.find(g => x >= g.x && x <= g.x + g.w && Math.abs(g.y - (topY + LEVEL_Y_OFFSET)) <= 6);
+  if (!r) console.warn("Keine Plattform fuer Gegner gefunden bei", x, topY);
+  return r;
+}
+
+function createEnemy(spawn) {
+  const t = ENEMY_TYPES[spawn.type];
+  const plat = findPlatform(spawn.x, spawn.y);
+  if (!t || !plat) return null;
+  const S = t.scale || ENEMY_SCALE;
+  const w = Math.round(t.w * S), h = Math.round(t.h * S);
+  return {
+    type: spawn.type, t, S,
+    spawnX: spawn.x - w / 2, spawnY: plat.y - h,
+    vx: 0, vy: 0, grounded: true, aggro: false, jumpCooldown: 0,
+    flash: 0, maxHp: t.hp,
+    hasAxe: true, axe: null, throwCooldown: 60, unarmedTicks: 0, released: false,
+    slamCooldown: 60, deathAnim: "dead",
+    x: spawn.x - w / 2, y: plat.y - h, w, h,
+    plat,
+    minX: plat.x + 4, maxX: plat.x + plat.w - w - 4,
+    dir: -1,                // -1 = links (so sind die Sprites gezeichnet), 1 = rechts
+    hp: t.hp,
+    state: "walk", animTick: 0,
+    pauseTicks: 0, attackCooldown: 0, knockVx: 0, hitDone: false,
+    deadTicks: 0, alpha: 1, removed: false,
+  };
+}
+
+function spawnEnemies() {
+  enemies = ENEMY_SPAWNS.map(createEnemy).filter(Boolean);
+  axes = [];
+}
+
+function setEnemyState(e, state) {
+  if (e.state !== state) { e.state = state; e.animTick = 0; e.hitDone = false; }
+}
+function getAnim(e, state = e.state) {
+  const a = e.t.anims[state === "dead" ? e.deathAnim : state];
+  return e.t.directional ? a[e.dir > 0 ? "r" : "l"] : a;
+}
+function enemyFrame(e) {
+  const a = getAnim(e);
+  const f = Math.floor(e.animTick / a.ticks);
+  return (a.start || 0) + (a.loop ? f % a.frames : Math.min(f, a.frames - 1));
+}
+function enemyAnimDone(e) {
+  const a = getAnim(e);
+  return !a.loop && e.animTick >= a.frames * a.ticks;
+}
+function clampToPlatform(e) {
+  e.x = Math.max(e.minX, Math.min(e.x, e.maxX));
+}
+
+function updateEnemy(e) {
+  if (e.t.hunter) { updateHunter(e); return; }
+  const t = e.t, S = e.S;
+  e.animTick++;
+  if (e.flash > 0) e.flash--;
+
+  if (e.state === "dead") {
+    if (enemyAnimDone(e)) {
+      e.deadTicks++;
+      // Zombie-Leiche liegt kurz, Skelett zerfaellt sofort
+      const lieTicks = t.crumble ? 0 : 120;
+      if (e.deadTicks > lieTicks) e.alpha -= t.crumble ? 1 / 12 : 1 / 60;
+      if (e.alpha <= 0) e.removed = true;
+    }
+    return;
+  }
+  if (e.attackCooldown > 0) e.attackCooldown--;
+  if (e.slamCooldown > 0) e.slamCooldown--;
+
+  // Rueckstoss (Treffer oder Schild-Block) laeuft unabhaengig vom Zustand aus
+  if (e.knockVx) {
+    e.x += e.knockVx; e.knockVx *= 0.8;
+    if (Math.abs(e.knockVx) < 0.05) e.knockVx = 0;
+    clampToPlatform(e);
+  }
+
+  // Spieler "in der Naehe": horizontal ueber der Plattform und hoechstens
+  // etwas darueber (z. B. im Sprung) -- nicht auf anderen Plattformen.
+  const playerBottom = player.y + player.h;
+  const playerNear =
+    !player.inSecretRoom &&
+    player.x + player.w > e.plat.x && player.x < e.plat.x + e.plat.w &&
+    playerBottom <= e.plat.y + 2 && playerBottom >= e.plat.y - 90;
+  const dx = (player.x + player.w / 2) - (e.x + e.w / 2);
+  const gap = Math.abs(dx) - (e.w + player.w) / 2;
+
+  if (e.state === "hurt") {
+    if (enemyAnimDone(e)) setEnemyState(e, "idle");
+    return;
+  }
+
+  if (e.state === "attack") {
+    if (enemyFrame(e) >= t.attackHitFrame && !e.hitDone) {
+      e.hitDone = true;
+      const r = t.attackReach * S;
+      const reach = { x: e.dir < 0 ? e.x - r : e.x + e.w - 4, y: e.y + 4, w: r + 4, h: e.h - 8 };
+      if (rectsOverlap(player, reach)) takeDamage(e.dir);
+    }
+    if (enemyAnimDone(e)) { e.attackCooldown = t.attackCooldown; setEnemyState(e, "idle"); }
+    return;
+  }
+
+  if (e.state === "slam") {
+    // Boden-Stampfer: Schockwelle trifft, wer auf der Plattform am Boden steht
+    if (enemyFrame(e) >= t.slam.hitFrame && !e.hitDone) {
+      e.hitDone = true;
+      const groundY = e.plat.y;
+      shakeTicks = 12;
+      for (const side of [-1, 1]) spawnDust(e.x + e.w / 2 + side * e.w / 2, groundY, side);
+      const onGround = player.grounded && Math.abs(playerBottom - groundY) < 3;
+      if (onGround && Math.abs(dx) < t.slam.range + player.w / 2) takeDamage(dx >= 0 ? 1 : -1);
+    }
+    if (enemyAnimDone(e)) {
+      e.slamCooldown = t.slam.cooldown; e.attackCooldown = t.attackCooldown;
+      setEnemyState(e, "idle");
+    }
+    return;
+  }
+
+  if (e.state === "alert") {
+    e.dir = dx >= 0 ? 1 : -1;
+    if (enemyAnimDone(e)) setEnemyState(e, "idle");
+    return;
+  }
+
+  // Verfolgen, wenn der Spieler auf seiner Plattform ist
+  if (playerNear && Math.abs(dx) < t.aggroRange) {
+    e.dir = dx >= 0 ? 1 : -1;
+    e.pauseTicks = 0;
+    if (t.alertAnim && !e.alerted) { e.alerted = true; setEnemyState(e, t.alertAnim); return; }
+    const slamReady = t.slam && e.slamCooldown === 0 && e.attackCooldown === 0;
+    if (gap < t.attackGap * S) {
+      if (slamReady && Math.random() < t.slam.chance) setEnemyState(e, "slam");
+      else setEnemyState(e, e.attackCooldown === 0 ? "attack" : "idle");
+      return;
+    }
+    // Spieler etwas weiter weg, aber in Reichweite der Schockwelle
+    if (slamReady && gap < t.slam.range * 0.6) { setEnemyState(e, "slam"); return; }
+    const before = e.x;
+    e.x += e.dir * t.chaseSpeed;
+    clampToPlatform(e);
+    setEnemyState(e, e.x === before ? "idle" : "chase"); // an der Kante: stehen bleiben
+    return;
+  }
+
+  // Patrouille: hin und her, an jeder Kante kurz warten und umdrehen
+  e.alerted = false;
+  if (e.pauseTicks > 0) {
+    setEnemyState(e, t.pauseAnim || "idle");
+    e.pauseTicks--;
+    if (e.pauseTicks === 0) e.dir *= -1;
+    return;
+  }
+  setEnemyState(e, "walk");
+  e.x += e.dir * t.patrolSpeed;
+  if (e.x <= e.minX && e.dir < 0) { e.x = e.minX; e.pauseTicks = ENEMY_EDGE_PAUSE; }
+  else if (e.x >= e.maxX && e.dir > 0) { e.x = e.maxX; e.pauseTicks = ENEMY_EDGE_PAUSE; }
+}
+
+// --- Jaeger-KI (Axt-Zombie) -------------------------------------------
+function solidAt(x, y) { return GROUND.some(r => pointInRect(x, y, r)); }
+
+// Wie die Spieler-Kollision, nur fuer Gegner
+function moveWithCollisions(e) {
+  let hitWall = false;
+  e.x += e.vx;
+  for (const r of GROUND) {
+    if (rectsOverlap(e, r)) {
+      if (e.vx > 0) e.x = r.x - e.w;
+      else if (e.vx < 0) e.x = r.x + r.w;
+      hitWall = true;
+    }
+  }
+  e.y += e.vy;
+  e.grounded = false;
+  for (const r of GROUND) {
+    if (rectsOverlap(e, r)) {
+      if (e.vy > 0) { e.y = r.y - e.h; e.vy = 0; e.grounded = true; }
+      else if (e.vy < 0) { e.y = r.y + r.h; e.vy = 0; }
+    }
+  }
+  e.x = Math.max(0, Math.min(e.x, LEVEL_WIDTH - e.w));
+  return hitWall;
+}
+
+// Sprung/Fall vorher "im Kopf" durchspielen: landet er auf einer Plattform
+// (true) oder faellt er in einen Abgrund (false)? Verhindert, dass der Jaeger
+// sich in Luecken stuerzt, durch die er nicht passt.
+function landsSafely(e, vy0, vx) {
+  const sim = { x: e.x, y: e.y, w: e.w, h: e.h, vx, vy: vy0, grounded: false };
+  let doubleJumped = false;
+  for (let i = 0; i < 120; i++) {
+    sim.vy = Math.min(sim.vy + GRAVITY, 16);
+    sim.vx = vx;
+    const hitWall = moveWithCollisions(sim);
+    if (hitWall && !sim.grounded && !doubleJumped) { sim.vy = e.t.jumpForce * 0.85; doubleJumped = true; }
+    if (sim.grounded && i > 0) return true;
+    if (sim.y > H) return false;
+  }
+  return false;
+}
+
+function hunterJump(e) {
+  e.vy = e.t.jumpForce;
+  e.grounded = false;
+  e.jumpCooldown = e.t.jumpCooldown;
+  e.airVx = e.dir * e.t.jumpSpeed;
+  e.doubleJumped = false;
+}
+
+// Laeuft auf ein Ziel zu (Spieler oder die eigene Axt) und springt dabei
+// ueber Waende, auf hoehere Plattformen und ueber Luecken.
+function seek(e, targetX, targetBottom, speed) {
+  const ecx = e.x + e.w / 2;
+  const dx = targetX - ecx;
+  const dy = targetBottom - (e.y + e.h);   // > 0: Ziel liegt tiefer
+  if (Math.abs(dx) > 4) e.dir = dx > 0 ? 1 : -1;
+  if (!e.grounded) return e.dir * speed;
+
+  const fx = e.dir > 0 ? e.x + e.w + 3 : e.x - 3;
+  const wallAhead = solidAt(fx, e.y + e.h - 6) || solidAt(fx, e.y + e.h / 2);
+  const edgeAhead = !solidAt(fx, e.y + e.h + 4);
+  const targetAbove = dy < -40 && Math.abs(dx) < 50;   // Ziel steht direkt ueber ihm
+  const targetBelow = dy > 30;
+  // Wand -> drueberspringen, Ziel direkt drueber -> hochspringen,
+  // Kante -> rueberspringen (ausser das Ziel ist unten, dann einfach runterfallen)
+  const wantsJump = wallAhead || targetAbove || (edgeAhead && !targetBelow);
+  if (wantsJump && e.jumpCooldown === 0 && landsSafely(e, e.t.jumpForce, e.dir * e.t.jumpSpeed)) {
+    hunterJump(e);
+    return e.dir * speed;
+  }
+  // An der Kante: nur weiterlaufen/runterfallen, wenn unten auch Boden kommt
+  if (edgeAhead && !(targetBelow && landsSafely(e, 0, e.dir * speed))) return 0;
+  if (wallAhead) return 0;
+  return Math.abs(dx) > 4 ? e.dir * speed : 0;
+}
+
+function throwAxe(e) {
+  const handX = e.x + e.w / 2 + e.dir * 10;
+  const handY = e.y + 8;
+  // Bogen so berechnen, dass die Axt ungefaehr auf Brusthoehe beim Spieler ankommt
+  const dist = Math.abs((player.x + player.w / 2) - handX);
+  const t = Math.max(8, dist / AXE_SPEED);
+  const dyTarget = (player.y + player.h * 0.4) - handY;
+  const vy = Math.max(-6, Math.min(3, (dyTarget - 0.5 * AXE_GRAVITY * t * t) / t));
+  const axe = {
+    x: handX, y: handY, vx: e.dir * AXE_SPEED, vy, dir: e.dir,
+    state: "fly", tick: 0, owner: e, hitPlayer: false, groundY: 0, alpha: 1, removed: false,
+  };
+  axes.push(axe);
+  e.axe = axe;
+  e.hasAxe = false;
+  e.unarmedTicks = 0;
+}
+
+function updateHunter(e) {
+  const t = e.t;
+  e.animTick++;
+  if (e.flash > 0) e.flash--;
+  if (e.attackCooldown > 0) e.attackCooldown--;
+  if (e.jumpCooldown > 0) e.jumpCooldown--;
+  if (e.throwCooldown > 0) e.throwCooldown--;
+
+  e.vy = Math.min(e.vy + GRAVITY, 16);
+
+  if (e.state === "dead") {
+    e.vx = e.knockVx; e.knockVx *= 0.8;
+    moveWithCollisions(e);
+    if (enemyAnimDone(e)) {
+      e.deadTicks++;
+      if (e.deadTicks > 120) e.alpha -= 1 / 60;
+      if (e.alpha <= 0) e.removed = true;
+    }
+    return;
+  }
+
+  const S = e.S;
+  const pcx = player.x + player.w / 2, ecx = e.x + e.w / 2;
+  const dx = pcx - ecx;
+  const playerBottom = player.y + player.h;
+  const dy = playerBottom - (e.y + e.h);
+  const gap = Math.abs(dx) - (e.w + player.w) / 2;
+  const sameLevel = Math.abs(dy) < 30;
+
+  // Jagd starten/beenden
+  if (player.inSecretRoom || Math.abs(dx) > t.loseRange) e.aggro = false;
+  else if (Math.abs(dx) < t.aggroRange && Math.abs(dy) < 170) e.aggro = true;
+
+  let targetVx = 0;
+
+  if (e.state === "attack") {
+    // Nahkampf: Axt-Hieb
+    if (enemyFrame(e) >= t.attackHitFrame && !e.hitDone) {
+      e.hitDone = true;
+      const r = t.attackReach * S;
+      const reach = { x: e.dir < 0 ? e.x - r : e.x + e.w - 4, y: e.y + 6, w: r + 4, h: e.h - 10 };
+      if (rectsOverlap(player, reach)) takeDamage(e.dir);
+    }
+    if (enemyAnimDone(e)) { e.attackCooldown = t.attackCooldown; setEnemyState(e, "idle"); }
+
+  } else if (e.state === "throw") {
+    // Fernkampf: in Frame 3 verlaesst die Axt die Hand
+    if (enemyFrame(e) >= t.throwReleaseFrame && !e.released) { e.released = true; throwAxe(e); }
+    if (enemyAnimDone(e)) setEnemyState(e, "unarmedIdle");
+
+  } else if (!e.hasAxe) {
+    // Ohne Axt: zurueck zur Axt laufen und aufheben
+    e.unarmedTicks++;
+    const a = e.axe;
+    const lost = !a || a.removed;
+    if (e.unarmedTicks > t.unarmedMaxTicks || (lost && e.unarmedTicks > t.lostAxeTicks)) {
+      // Axt verloren (z. B. in einen Abgrund gefallen) -> nach kurzer Zeit "neue Axt"
+      e.hasAxe = true; e.axe = null; e.throwCooldown = t.throwCooldown;
+      if (a) a.removed = true;
+      setEnemyState(e, "idle");
+    } else if (lost) {
+      // ohne Axt weiter hinterher, aber kein Angriff moeglich
+      targetVx = e.aggro ? seek(e, pcx, playerBottom, t.chaseSpeed) : 0;
+      setEnemyState(e, targetVx ? "unarmedWalk" : "unarmedIdle");
+    } else if (a.state === "fly") {
+      setEnemyState(e, "unarmedIdle");          // erst mal zuschauen, wo sie landet
+    } else {
+      const atAxe = Math.abs(a.x - ecx) < 10 && Math.abs(a.groundY - (e.y + e.h)) < 8 && e.grounded;
+      if (atAxe) {
+        a.removed = true; e.axe = null; e.hasAxe = true;
+        e.throwCooldown = t.throwCooldown;
+        setEnemyState(e, "idle");
+      } else {
+        targetVx = seek(e, a.x, a.groundY, t.chaseSpeed);
+        setEnemyState(e, targetVx ? "unarmedWalk" : "unarmedIdle");
+      }
+    }
+
+  } else if (e.aggro) {
+    if (Math.abs(dx) > 4) e.dir = dx > 0 ? 1 : -1;
+    const inReach = gap < t.attackGap * S && sameLevel;
+    const canThrow = e.grounded && e.throwCooldown === 0 && Math.abs(dy) < 50 &&
+      Math.abs(dx) > t.throwMinDist && Math.abs(dx) < t.throwMaxDist;
+    if (inReach) {
+      if (e.grounded && e.attackCooldown === 0) setEnemyState(e, "attack");
+      else setEnemyState(e, "idle");
+    } else if (canThrow) {
+      e.released = false;
+      setEnemyState(e, "throw");
+    } else {
+      targetVx = seek(e, pcx, playerBottom, t.chaseSpeed);
+      setEnemyState(e, targetVx || !e.grounded ? "chase" : "idle");
+    }
+
+  } else {
+    // Patrouille auf der aktuellen Plattform, bis er den Spieler bemerkt
+    if (e.pauseTicks > 0) {
+      setEnemyState(e, "idle");
+      if (--e.pauseTicks === 0) e.dir *= -1;
+    } else {
+      setEnemyState(e, "walk");
+      targetVx = e.dir * t.patrolSpeed;
+      const fx = e.dir > 0 ? e.x + e.w + 3 : e.x - 3;
+      if (e.grounded && (!solidAt(fx, e.y + e.h + 4) || solidAt(fx, e.y + e.h / 2))) {
+        targetVx = 0; e.pauseTicks = ENEMY_EDGE_PAUSE;
+      }
+    }
+  }
+
+  // im Sprung die Sprungweite halten, am Boden normal laufen
+  const baseVx = e.grounded ? targetVx : (e.airVx ?? targetVx);
+  if (e.grounded) e.airVx = null;
+  e.vx = baseVx + e.knockVx;
+  e.knockVx *= 0.8;
+  if (Math.abs(e.knockVx) < 0.05) e.knockVx = 0;
+  const hitWall = moveWithCollisions(e);
+  // Doppelsprung wie der Spieler: prallt er im Sprung gegen eine Kante, springt er nochmal
+  if (hitWall && !e.grounded && !e.doubleJumped && e.state !== "dead") {
+    e.vy = e.t.jumpForce * 0.85;
+    e.doubleJumped = true;
+  }
+
+  // In einen Abgrund gefallen -> zurueck zum Startpunkt
+  if (e.y > H + 60) {
+    e.x = e.spawnX; e.y = e.spawnY; e.vx = 0; e.vy = 0;
+    e.aggro = false; e.hasAxe = true;
+    if (e.axe) e.axe.removed = true;
+    e.axe = null;
+    setEnemyState(e, "idle");
+  }
+}
+
+function updateAxes() {
+  for (const a of axes) {
+    a.tick++;
+    if (a.state === "fly") {
+      a.vy += AXE_GRAVITY;
+      a.x += a.vx; a.y += a.vy;
+      const hb = { x: a.x - AXE_HITBOX / 2, y: a.y - AXE_HITBOX / 2, w: AXE_HITBOX, h: AXE_HITBOX };
+      if (!a.hitPlayer && !player.inSecretRoom && rectsOverlap(hb, player)) {
+        takeDamage(a.dir);
+        a.hitPlayer = true;
+        a.vx *= -0.25; a.vy = -2;           // prallt am Spieler ab und faellt runter
+      }
+      const tipY = a.y + 10;
+      for (const r of GROUND) {
+        if (!pointInRect(a.x, tipY, r)) continue;
+        if (a.vy > 0 && tipY - a.vy <= r.y + 2) {
+          a.state = "landing"; a.tick = 0; a.groundY = r.y;   // von oben -> steckt im Boden
+          spawnSparks(a.x, r.y, "#c9c2b0", 4);
+        } else {
+          a.vx = -a.vx * 0.3; a.x += a.vx * 3;               // gegen eine Wand -> abprallen
+        }
+        break;
+      }
+      if (a.y > H + 60 || a.x < -60 || a.x > LEVEL_WIDTH + 60) a.removed = true;
+    } else if (a.state === "landing") {
+      if (a.tick >= 5 * AXE_LANDING_TICKS) a.state = "landed";
+    } else if (a.owner.state === "dead") {
+      a.alpha -= 1 / 90;                       // Besitzer tot -> Axt verschwindet langsam
+      if (a.alpha <= 0) a.removed = true;
+    }
+  }
+  axes = axes.filter(a => !a.removed);
+}
+
+// Gibt true zurueck, wenn die Kugel verbraucht ist (Treffer oder Block)
+function hitEnemy(e, b) {
+  if (e.state === "dead") return false;
+  const fromDir = b.vx >= 0 ? 1 : -1;   // Richtung, in die die Kugel fliegt
+  const steep = Math.abs(b.vy) > Math.abs(b.vx) * 1.3;
+
+  // Schild: blockt flache Schuesse von vorne -- nicht beim Zuschlagen,
+  // nicht von hinten und nicht steil von oben
+  const facingBullet = e.dir === -fromDir;
+  if (e.t.shield && facingBullet && !steep && e.state !== "attack" && e.state !== "hurt") {
+    e.knockVx = fromDir * 1.2;
+    spawnSparks(b.x, b.y, "#c9c9d6", 6);
+    return true;
+  }
+
+  e.hp--;
+  e.flash = 6;
+  spawnSparks(b.x, b.y, e.t.hitColor, 3);
+  spawnHitFx(b.x, b.y, fromDir);
+  if (e.hp <= 0) {
+    const deaths = e.t.deathAnims || ["dead"];
+    e.deathAnim = deaths[Math.floor(Math.random() * deaths.length)];
+    setEnemyState(e, "dead");
+    e.knockVx = fromDir * 1.5;
+    if (e.t.crumble) spawnDebris(e.x + e.w / 2, e.y + e.h / 2, e.t.hitColor, 14);
+  } else if (e.t.hunter) {
+    // Jaeger hat keine Hurt-Animation: nur Aufblitzen + Rueckstoss, und er ist sofort sauer
+    e.knockVx = fromDir * 1.8;
+    e.aggro = true;
+    if (e.state !== "attack") e.dir = -fromDir;
+  } else if (!e.t.anims.hurt) {
+    // keine Hurt-Animation: Aufblitzen + Rueckstoss, Angriffe laufen weiter
+    e.knockVx = fromDir * (e.t.hp >= 8 ? 0.8 : 2.2);   // der Grosse wankt kaum
+    if (!["attack", "slam"].includes(e.state)) e.dir = -fromDir;
+  } else {
+    setEnemyState(e, "hurt");
+    e.knockVx = fromDir * 2.2;
+    e.dir = -fromDir;                    // dreht sich zum Schuetzen um
+  }
+  return true;
+}
+
+// =====================================================================
+// WAFFE + KUGELN
+// =====================================================================
+function chestPoint() {
+  return { x: player.x + player.w / 2, y: player.y + player.h - HAND_Y_FROM_BOTTOM * SPRITE_SCALE };
+}
+
+// Blickrichtung ("letzte Eingabe gewinnt"):
+// - A/D drehen den Charakter sofort in Laufrichtung
+// - im Stehen dreht er sich zur Maus, sobald die Maus bewegt wird
+// - beim Schiessen (und kurz danach) schaut er immer zur Maus,
+//   so kann man z. B. nach rechts laufen und kurz nach hinten schiessen
+function updateAim() {
+  if (gun.aimHold > 0) gun.aimHold--;
+  const moveDir = (keys["d"] || keys["arrowright"] ? 1 : 0) - (keys["a"] || keys["arrowleft"] ? 1 : 0);
+  const aiming = mouse.down || shotQueued || gun.aimHold > 0;
+
+  if (!mouse.active) {
+    if (moveDir !== 0) player.facing = moveDir;
+    gun.dir = player.facing > 0 ? "right" : "left";
+    gun.angle = player.facing > 0 ? 0 : Math.PI;
+    return;
+  }
+  const c = chestPoint();
+  let dx = mouse.x + cameraX - c.x;
+  const dy = mouse.y - c.y;
+
+  if (aiming) player.facing = dx >= 0 ? 1 : -1;
+  else if (moveDir !== 0) player.facing = moveDir;
+  else if (mouse.moved) player.facing = dx >= 0 ? 1 : -1;
+  mouse.moved = false;
+
+  // Maus liegt "hinter" dem Charakter (beim Laufen): Waffe zeigt nach vorne
+  if (Math.sign(dx) !== player.facing) dx = Math.abs(dx) * player.facing;
+  gun.angle = Math.atan2(dy, dx);
+  // Steil nach oben/unten -> up/down-Sheets, sonst seitlich
+  if (Math.abs(dy) > Math.abs(dx) * 1.3) gun.dir = dy < 0 ? "up" : "down";
+  else gun.dir = player.facing > 0 ? "right" : "left";
+}
+
+// Linke obere Ecke des Pistolen-idle-Frames in Welt-/Bildschirm-Koordinaten
+function gunOrigin(px, py, scale) {
+  const cfg = GUN_DIRS[gun.dir];
+  const S = SPRITE_SCALE * scale;
+  const charFrameW = (idleRightImg.naturalWidth / CHAR_FRAMES) || 10;
+  const spriteLeft = px + (player.w * scale - charFrameW * S) / 2;
+  const handX = player.facing > 0 ? HAND_X_RIGHT : HAND_X_LEFT;
+  return {
+    cfg, S,
+    x: spriteLeft + (handX - cfg.grip[0]) * S,
+    y: py + player.h * scale - (HAND_Y_FROM_BOTTOM + cfg.grip[1]) * S,
+  };
+}
+
+function startReload() {
+  if (gun.state === "reload" || gun.ammo === MAG_SIZE || gun.reserve === 0) return;
+  gun.state = "reload"; gun.tick = 0;
+}
+
+function fire() {
+  const o = gunOrigin(player.x, player.y, 1);
+  const mx = o.x + o.cfg.muzzle[0] * o.S;
+  const my = o.y + o.cfg.muzzle[1] * o.S;
+  // Von der Muendung aus genau auf den Cursor zielen, damit auch kleine,
+  // flache Gegner (Ratten) getroffen werden. Liegt der Cursor direkt auf der
+  // Muendung oder "hinter" ihr, gilt weiter der normale Zielwinkel.
+  let angle = gun.angle;
+  if (mouse.active) {
+    const tx = mouse.x + cameraX - mx, ty = mouse.y - my;
+    if (Math.hypot(tx, ty) > 6 && Math.cos(Math.atan2(ty, tx) - gun.angle) > 0.5) angle = Math.atan2(ty, tx);
+  }
+  bullets.push({
+    x: mx, y: my,
+    vx: Math.cos(angle) * BULLET_SPEED, vy: Math.sin(angle) * BULLET_SPEED,
+    angle, dist: 0, dead: false,
+  });
+  // Huelse fliegt nach hinten-oben raus
+  particles.push({
+    type: "casing", x: o.x + 4 * o.S, y: o.y + 2 * o.S,
+    vx: -player.facing * (1 + Math.random() * 1.2), vy: -2.2 - Math.random() * 1.5,
+    life: 150, maxLife: 150,
+  });
+  gun.ammo--;
+  gun.cooldown = SHOT_COOLDOWN;
+  gun.flash = 3;
+  gun.aimHold = AIM_HOLD_TICKS;
+  gun.state = "shoot"; gun.tick = 0;
+}
+
+function updateGun() {
+  if (gun.cooldown > 0) gun.cooldown--;
+  if (gun.flash > 0) gun.flash--;
+
+  if (gun.state === "shoot") {
+    gun.tick++;
+    if (gun.tick >= 3 * SHOOT_ANIM_TICKS) {
+      gun.state = "idle";
+      if (gun.ammo === 0) startReload();   // leer -> automatisch nachladen
+    }
+  } else if (gun.state === "reload") {
+    gun.tick++;
+    if (gun.tick >= 11 * RELOAD_ANIM_TICKS) {
+      // nur so viele Patronen nachladen, wie in der Reserve sind
+      const take = Math.min(MAG_SIZE - gun.ammo, gun.reserve);
+      gun.ammo += take; gun.reserve -= take;
+      gun.state = "idle";
+    }
+  }
+
+  if (keys["r"]) startReload();
+
+  const wantsShot = shotQueued || mouse.down;
+  shotQueued = false;
+  if (wantsShot && gun.state !== "reload" && gun.cooldown === 0) {
+    if (gun.ammo > 0) fire();
+    else if (gun.reserve > 0) startReload();
+    else { gun.cooldown = SHOT_COOLDOWN; flashNoAmmo(); } // Magazin und Reserve leer
+  }
+}
+
+function updateBullets() {
+  const SUB = 3; // in kleinen Schritten bewegen, damit nichts "durchtunnelt"
+  for (const b of bullets) {
+    for (let i = 0; i < SUB && !b.dead; i++) {
+      b.x += b.vx / SUB; b.y += b.vy / SUB;
+      b.dist += BULLET_SPEED / SUB;
+      if (b.dist > BULLET_RANGE || b.x < 0 || b.x > LEVEL_WIDTH || b.y < 0 || b.y > H) { b.dead = true; break; }
+      if (GROUND.some(r => pointInRect(b.x, b.y, r))) { b.dead = true; spawnSparks(b.x, b.y, "#d4d06d", 3); break; }
+      for (const e of enemies) {
+        if (e.state !== "dead" && pointInRect(b.x, b.y, e) && hitEnemy(e, b)) { b.dead = true; break; }
+      }
+    }
+  }
+  bullets = bullets.filter(b => !b.dead);
+}
+
+function spawnHitFx(x, y, dir) {
+  const fx = HIT_FX[Math.floor(Math.random() * HIT_FX.length)];
+  const life = fx.frames * HIT_FX_TICKS;
+  // Spritzer leicht in Flugrichtung der Kugel versetzt, Richtung zufaellig gespiegelt
+  particles.push({ type: "hitfx", fx, x: x + dir * 3, y, flip: Math.random() < 0.5, life, maxLife: life });
+}
+
+function spawnSparks(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    particles.push({
+      type: "spark", color, x, y,
+      vx: (Math.random() - 0.5) * 3, vy: (Math.random() - 0.8) * 2.5,
+      life: 10 + Math.random() * 6, maxLife: 16,
+    });
+  }
+}
+
+// Staubwolke der Schockwelle, rollt am Boden entlang nach aussen
+function spawnDust(x, groundY, dir) {
+  for (let i = 0; i < 10; i++) {
+    particles.push({
+      type: "spark", color: i % 2 ? "#c9c2b0" : "#8f8878",
+      x: x + dir * i * 6, y: groundY - 2 - Math.random() * 6,
+      vx: dir * (1.5 + Math.random() * 2.5), vy: -Math.random() * 1.2,
+      life: 14 + Math.random() * 10, maxLife: 24,
+    });
+  }
+}
+
+// Knochen-Splitter: fallen wie Huelsen auf die Plattform und bleiben kurz liegen
+function spawnDebris(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    particles.push({
+      type: "debris", color,
+      x: x + (Math.random() - 0.5) * 16, y: y + (Math.random() - 0.5) * 30,
+      vx: (Math.random() - 0.5) * 3.5, vy: -1 - Math.random() * 3,
+      life: 100 + Math.random() * 60, maxLife: 160,
+    });
+  }
+}
+
+function updateParticles() {
+  for (const p of particles) {
+    p.life--;
+    if (p.type === "hitfx") continue;
+    if (p.type === "spark") { p.x += p.vx; p.y += p.vy; p.vy += 0.15; continue; }
+    // Huelse/Splitter: Schwerkraft, auf Plattformen aufkommen, kurz abprallen, liegen bleiben
+    p.vy += 0.25;
+    p.x += p.vx; p.y += p.vy;
+    for (const r of GROUND) {
+      if (p.vy > 0 && pointInRect(p.x, p.y, r)) {
+        p.y = r.y - 1;
+        if (p.vy > 1.5) { p.vy *= -0.35; p.vx *= 0.6; }
+        else { p.vy = 0; p.vx *= 0.7; }
+      }
+    }
+  }
+  particles = particles.filter(p => p.life > 0 && p.y < H + 20);
+}
+
+// =====================================================================
+// UPDATE
+// =====================================================================
+function update() {
+  if (gameState !== "playing" || gameOver || !assetsReady()) return;
+  if (player.invulnFrames > 0) player.invulnFrames--;
+
+  if (player.inSecretRoom) {
+    const left = keys["a"] || keys["arrowleft"];
+    const right = keys["d"] || keys["arrowright"];
+    if (left) { player.x -= MOVE_SPEED; player.facing = -1; }
+    if (right) { player.x += MOVE_SPEED; player.facing = 1; }
+    // Nur innerhalb der tatsaechlichen Raumwaende bewegen, fest auf dem Boden stehen
+    player.x = Math.max(SECRET_LEFT, Math.min(player.x, SECRET_RIGHT - player.w));
+    player.y = SECRET_FLOOR_Y - player.h;
+    gun.dir = player.facing > 0 ? "right" : "left";
+    shotQueued = false; // im Geheimraum wird nicht geschossen
+
+    const playerCenterX = player.x + player.w / 2;
+    const atOpening = playerCenterX > SECRET_OPENING.xMin && playerCenterX < SECRET_OPENING.xMax;
+    if (atOpening && (keys["s"] || keys["arrowdown"])) exitSecretRoom();
+    updatePickups();
+    updateHUD();
+    return;
+  }
+
+  const left = keys["a"] || keys["arrowleft"];
+  const right = keys["d"] || keys["arrowright"];
+  if (left) { player.vx -= MOVE_SPEED * 0.3; player.facing = -1; }
+  if (right) { player.vx += MOVE_SPEED * 0.3; player.facing = 1; }
+  player.vx *= GROUND_FRICTION;
+  player.vx = Math.max(-MOVE_SPEED, Math.min(MOVE_SPEED, player.vx));
+
+  const jumpKeyDown = keys[" "] || keys["w"] || keys["arrowup"];
+  const jumpPressed = jumpKeyDown && !jumpKeyWasDown;
+  jumpKeyWasDown = jumpKeyDown;
+
+  if (jumpPressed) {
+    if (player.grounded) {
+      player.vy = JUMP_FORCE; player.grounded = false; player.jumpsUsed = 1;
+    } else if (player.jumpsUsed === 1) {
+      player.vy = DOUBLE_JUMP_FORCE; player.jumpsUsed = 2;
+      if (SECRET_TRIGGER && rectsOverlap(player, SECRET_TRIGGER)) { enterSecretRoom(); return; }
+    }
+  }
+
+  player.vy += GRAVITY;
+  player.vy = Math.min(player.vy, 16);
+
+  resolveGroundCollisions();
+
+  for (const s of SPIKES) {
+    if (rectsOverlap(player, s)) { takeDamage(player.vx >= 0 ? -1 : 1); break; }
+  }
+
+  if (player.y > H + 60) {
+    takeDamage(0);
+    if (!gameOver) { player.x = 24; player.y = GROUND[0].y - player.h; player.vx = 0; player.vy = 0; }
+  }
+
+  player.x = Math.max(0, Math.min(player.x, LEVEL_WIDTH - player.w));
+  cameraX = Math.max(0, Math.min(player.x - W / 2, LEVEL_WIDTH - W));
+
+  updateAim();
+  updateGun();
+  updateBullets();
+  for (const e of enemies) updateEnemy(e);
+  enemies = enemies.filter(e => !e.removed);
+  updateAxes();
+  updatePickups();
+  updateParticles();
+  updateHUD();
+}
+
+// =====================================================================
+// AUFSAMMEL-GEGENSTAENDE (Herzen + Munition)
+// =====================================================================
+const PICKUP_PATH = "assets/pickups/";
+const PICKUP_TYPES = {
+  heart: {
+    img: loadImg(`${PICKUP_PATH}Heart_Icon.png`),
+    scale: 0.5,               // Icon ist 33x31 -> auf halbe Groesse (ca. 17x16)
+    color: "#f07f86",
+    canTake: () => player.lives < player.maxLives,
+    take: () => { player.lives++; return "+1 Leben"; },
+    fullText: "Leben voll",
+  },
+  ammo: {
+    img: loadImg(`${PICKUP_PATH}Pistol-Bullet.png`),
+    scale: 1,                 // Originalgroesse 7x13
+    color: "#f5e9bb",
+    canTake: () => gun.reserve < MAX_RESERVE,
+    take: () => {
+      const n = Math.min(AMMO_PER_PICKUP, MAX_RESERVE - gun.reserve);
+      gun.reserve += n;
+      if (gun.ammo === 0) startReload(); // Magazin war leer -> gleich nachladen
+      return `+${n} Schuss`;
+    },
+    fullText: `Max. ${MAX_RESERVE}`,
+  },
+};
+const PICKUP_HOVER = 6;   // Abstand ueber dem Boden
+let pickups = [];
+let floaters = [];        // aufsteigende Texte wie "+10 Schuss"
+
+function spawnPickups() {
+  pickups = PICKUP_SPAWNS.map((p, i) => ({
+    ...p,
+    room: p.room || "level",
+    groundY: p.room === "secret" ? p.y : p.y + LEVEL_Y_OFFSET,
+    phase: i * 1.7,         // nicht alle wippen gleichzeitig
+    touching: false,
+    taken: false,
+  }));
+}
+
+function pickupRect(p, t) {
+  const def = PICKUP_TYPES[p.type];
+  const w = def.img.naturalWidth * def.scale, h = def.img.naturalHeight * def.scale;
+  const bob = Math.round(Math.sin(t / 380 + p.phase) * 2);
+  return { x: p.x - w / 2, y: p.groundY - PICKUP_HOVER - h + bob, w, h };
+}
+
+function updatePickups() {
+  const room = player.inSecretRoom ? "secret" : "level";
+  for (const p of pickups) {
+    if (p.taken || p.room !== room) continue;
+    const r = pickupRect(p, animTimer);
+    const touching = rectsOverlap(player, r);
+    if (touching) {
+      const def = PICKUP_TYPES[p.type];
+      if (def.canTake()) {
+        p.taken = true;
+        addFloater(p.x, r.y, def.take(), def.color);
+        if (room === "level") spawnSparks(p.x, r.y + r.h / 2, def.color, 10);
+      } else if (!p.touching) {
+        addFloater(p.x, r.y, def.fullText, "#c7bba7"); // nur einmal pro Beruehrung
+      }
+    }
+    p.touching = touching;
+  }
+  for (const f of floaters) { f.y -= 0.5; f.life--; }
+  floaters = floaters.filter(f => f.life > 0);
+}
+
+function addFloater(x, y, text, color) {
+  floaters.push({ x, y, text, color, life: 60, room: player.inSecretRoom ? "secret" : "level" });
+}
+
+// ox/oy/scale: im Geheimraum wird der Raum vergroessert gezeichnet
+function drawPickups(ox, oy, scale) {
+  const room = player.inSecretRoom ? "secret" : "level";
+  for (const p of pickups) {
+    if (p.taken || p.room !== room) continue;
+    const def = PICKUP_TYPES[p.type];
+    const r = pickupRect(p, animTimer);
+    // weicher Schatten am Boden
+    ctx.fillStyle = "rgba(20, 12, 24, 0.35)";
+    ctx.beginPath();
+    ctx.ellipse(ox + p.x * scale, oy + p.groundY * scale - 1, r.w * 0.45 * scale, 2 * scale, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.drawImage(def.img, Math.round(ox + r.x * scale), Math.round(oy + r.y * scale),
+      Math.round(r.w * scale), Math.round(r.h * scale));
+  }
+}
+
+function drawFloaters(ox, oy, scale) {
+  const room = player.inSecretRoom ? "secret" : "level";
+  ctx.save();
+  ctx.font = '16px "Silkscreen", "Courier New", monospace';
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  for (const f of floaters) {
+    if (f.room !== room) continue;
+    // Text am Bildrand nicht abschneiden (im Level ist der Canvas um cameraX verschoben)
+    const half = ctx.measureText(f.text).width / 2 + 4;
+    const viewL = scale === 1 ? cameraX : 0;
+    const x = Math.round(Math.max(viewL + half, Math.min(ox + f.x * scale, viewL + W - half)));
+    const y = Math.round(oy + f.y * scale) - 4;
+    ctx.globalAlpha = Math.min(1, f.life / 20);
+    ctx.fillStyle = "#2c1d35";
+    ctx.fillText(f.text, x, y + 2);
+    ctx.fillStyle = f.color;
+    ctx.fillText(f.text, x, y);
+  }
+  ctx.restore();
+}
+
+// --- HUD: Leben + Munition (nur neu zeichnen, wenn sich etwas aendert) ---
+// "bar" = Lebensbalken mit Herz, "hearts" = ein Herz pro Leben
+const HEALTH_STYLE = "bar";
+const UI = "assets/ui/";
+const hudEl = document.getElementById("hud");
+const hpBarEl = document.getElementById("hp-bar");
+const hpFillEl = document.getElementById("hp-fill");
+const hudHearts = document.getElementById("hearts");
+const hudAmmo = document.getElementById("ammo");
+const reloadLabel = document.getElementById("reload-label");
+const reserveEl = document.getElementById("reserve");
+const reserveCountEl = document.getElementById("reserve-count");
+reserveEl.querySelector(".reserve-max").textContent = `/${MAX_RESERVE}`;
+let noAmmoUntil = 0;
+// Klick ohne Munition: Hinweis kurz einblenden
+function flashNoAmmo() {
+  noAmmoUntil = performance.now() + 900;
+  lastHudKey = "";
+}
+hpBarEl.hidden = HEALTH_STYLE !== "bar";
+hudHearts.hidden = HEALTH_STYLE !== "hearts";
+const ammoIcons = [];
+for (let i = 0; i < MAG_SIZE; i++) {
+  const img = document.createElement("img");
+  img.alt = "";
+  hudAmmo.appendChild(img);
+  ammoIcons.push(img);
+}
+
+let lastHudKey = "", lastHudLives = null, lastHudReserve = null;
+function updateHUD() {
+  const noAmmo = gun.ammo === 0 && gun.reserve === 0;
+  const showNoAmmo = noAmmo && performance.now() < noAmmoUntil;
+  const key = `${player.lives}|${gun.ammo}|${gun.reserve}|${gun.state === "reload"}|${showNoAmmo}`;
+  if (key === lastHudKey) return;
+  lastHudKey = key;
+  const lives = Math.max(0, player.lives);
+  if (lastHudLives !== null && lives < lastHudLives) {
+    // kurzer Ruck, wenn man Schaden nimmt
+    hudEl.classList.remove("hurt"); void hudEl.offsetWidth; hudEl.classList.add("hurt");
+  }
+  lastHudLives = lives;
+  hpFillEl.style.width = `${(lives / player.maxLives) * 100}%`;
+  hpBarEl.setAttribute("aria-label", `Leben: ${lives} von ${player.maxLives}`);
+  if (HEALTH_STYLE === "hearts") {
+    hudHearts.innerHTML = "";
+    for (let i = 0; i < player.maxLives; i++) {
+      const img = document.createElement("img");
+      img.src = asset(UI + (i < lives ? "Heart_Full.png" : "Heart_Empty.png"));
+      img.alt = "";
+      hudHearts.appendChild(img);
+    }
+  }
+  ammoIcons.forEach((img, i) => {
+    img.src = asset(UI + (i < gun.ammo ? "Pistol-Bullet.png" : "Pistol-Bullet_Empty.png"));
+  });
+  hudAmmo.setAttribute("aria-label", `Munition: ${gun.ammo} von ${MAG_SIZE}`);
+  reserveCountEl.textContent = gun.reserve;
+  reserveEl.classList.toggle("empty", gun.reserve === 0);
+  reserveEl.setAttribute("aria-label", `Reserve: ${gun.reserve} von ${MAX_RESERVE} Patronen`);
+  if (lastHudReserve !== null && gun.reserve > lastHudReserve) {
+    reserveEl.classList.remove("gain"); void reserveEl.offsetWidth; reserveEl.classList.add("gain");
+  }
+  lastHudReserve = gun.reserve;
+  reloadLabel.hidden = gun.state !== "reload" && !showNoAmmo;
+  reloadLabel.textContent = gun.state === "reload" ? "Nachladen …" : "Keine Munition";
+  reloadLabel.classList.toggle("warn", gun.state !== "reload");
+}
+
+// =====================================================================
+// DRAW
+// =====================================================================
+const FOG_TOP = 20, FOG_FULL = 140;
+function fogWash(maxAlpha) {
+  const g = ctx.createLinearGradient(0, FOG_TOP, 0, FOG_FULL);
+  g.addColorStop(0, "rgba(210, 228, 222, 0)");
+  g.addColorStop(1, `rgba(210, 228, 222, ${maxAlpha})`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, FOG_TOP, W, H - FOG_TOP);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  if (!assetsReady()) {
+    ctx.fillStyle = "#223"; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#aab"; ctx.font = "14px sans-serif"; ctx.fillText("Lade...", 20, 30);
+    return;
+  }
+
+  if (player.inSecretRoom) {
+    ctx.fillStyle = "#15171a"; ctx.fillRect(0, 0, W, H);
+    const scale = Math.min(W / secretImg.naturalWidth, H / secretImg.naturalHeight) * 0.95;
+    const dw = secretImg.naturalWidth * scale, dh = secretImg.naturalHeight * scale;
+    const ox = (W - dw) / 2, oy = (H - dh) / 2;
+    ctx.drawImage(secretImg, ox, oy, dw, dh);
+    drawPickups(ox, oy, scale);
+    drawPlayer(ox + player.x * scale, oy + player.y * scale, scale);
+    drawFloaters(ox, oy, scale);
+    return;
+  }
+
+  ctx.fillStyle = "#101810"; ctx.fillRect(0, 0, W, H);
+
+  const bgParallax = 0.5;
+  const bgW = bgImg.naturalWidth, bgH = bgImg.naturalHeight;
+  const bgY = H - bgH;
+  const bgOffset = -((cameraX * bgParallax) % bgW);
+  for (let x = bgOffset - bgW; x < W; x += bgW) ctx.drawImage(bgImg, x, bgY);
+  fogWash(0.38);
+
+  ctx.save();
+  let shakeX = 0, shakeY = 0;
+  if (shakeTicks > 0) {
+    shakeTicks--;
+    shakeX = Math.round((Math.random() - 0.5) * 6);
+    shakeY = Math.round((Math.random() - 0.5) * 4);
+  }
+  ctx.translate(-Math.round(cameraX) + shakeX, shakeY);
+  const levelY = H - levelImg.naturalHeight;
+  ctx.drawImage(levelImg, 0, levelY);
+  for (const e of enemies) drawEnemy(e);
+  drawPickups(0, 0, 1);
+  drawAxes();
+  drawParticles();
+  drawPlayer(player.x, player.y, 1);
+  drawBullets();
+  drawFloaters(0, 0, 1);
+  ctx.restore();
+}
+
+// Ein Sprite-Frame zeichnen, optional gespiegelt und/oder weiss aufblitzend (Treffer)
+const tintCanvas = document.createElement("canvas");
+const tintCtx = tintCanvas.getContext("2d");
+function drawFrame(img, sx, sy, sw, sh, dx, dy, dw, dh, flip, flash) {
+  let src = img;
+  if (flash) {
+    tintCanvas.width = sw; tintCanvas.height = sh;
+    tintCtx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+    tintCtx.globalCompositeOperation = "source-atop";
+    tintCtx.fillStyle = "rgba(255, 255, 255, 0.75)";
+    tintCtx.fillRect(0, 0, sw, sh);
+    tintCtx.globalCompositeOperation = "source-over";
+    src = tintCanvas; sx = 0; sy = 0;
+  }
+  if (flip) {
+    ctx.save();
+    ctx.translate(dx + dw, dy);
+    ctx.scale(-1, 1);
+    ctx.drawImage(src, sx, sy, sw, sh, 0, 0, dw, dh);
+    ctx.restore();
+  } else {
+    ctx.drawImage(src, sx, sy, sw, sh, dx, dy, dw, dh);
+  }
+}
+
+function drawEnemy(e) {
+  ctx.globalAlpha = Math.max(0, e.alpha);
+  const flash = e.flash > 0 && e.flash % 2 === 0;
+  if (e.t.directional) {
+    // Jaeger in der Luft: Lauf-Frame "eingefroren" als Sprung-Pose
+    const inAir = e.t.hunter && !e.grounded && !["attack", "throw", "dead"].includes(e.state);
+    const airState = e.hasAxe ? "walk" : "unarmedWalk";
+    const a = inAir ? getAnim(e, airState) : getAnim(e);
+    const f = inAir ? (a.start || 0) + 1 : enemyFrame(e);
+    const fw = a.img.naturalWidth / (a.sheetFrames || a.frames), fh = a.img.naturalHeight;
+    if (fw) {
+      // gespiegeltes Sheet: Kopf-Anker auf der anderen Seite des Frames
+      const anchor = a.mirror ? fw - 1 - a.anchor : a.anchor;
+      const dx = Math.round(e.x + e.w / 2 - anchor * e.S);
+      const dy = Math.round(e.y + e.h - fh * e.S);
+      drawFrame(a.img, f * fw, 0, fw, fh, dx, dy, fw * e.S, fh * e.S, !!a.mirror, flash);
+    }
+  } else {
+    const a = getAnim(e);
+    if (a.img.naturalWidth) {
+      // Standard 64x64, Fuesse auf y=48 -- einzelne Sheets koennen abweichen (fh/feetY)
+      const fw = a.fw || ENEMY_FRAME, fh = a.fh || ENEMY_FRAME, feet = a.feetY || ENEMY_FEET_Y;
+      const dx = Math.round(e.x + e.w / 2 - fw * e.S / 2);
+      const dy = Math.round(e.y + e.h - feet * e.S);
+      // Sprites schauen nach links -> fuer rechts horizontal spiegeln
+      drawFrame(a.img, enemyFrame(e) * fw, 0, fw, fh, dx, dy, fw * e.S, fh * e.S, e.dir > 0, flash);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // Lebensbalken, sobald der Gegner verletzt ist
+  if (e.state !== "dead" && e.hp < e.maxHp) {
+    const bw = 26, bx = Math.round(e.x + e.w / 2 - bw / 2), by = Math.round(e.y - 10);
+    ctx.fillStyle = "rgba(10, 10, 12, 0.75)"; ctx.fillRect(bx - 1, by - 1, bw + 2, 5);
+    ctx.fillStyle = "#e8453c"; ctx.fillRect(bx, by, Math.round(bw * e.hp / e.maxHp), 3);
+  }
+}
+
+function drawAxes() {
+  const S = AXE_SCALE;
+  for (const a of axes) {
+    const set = THROWN_AXE[a.dir > 0 ? "r" : "l"];
+    ctx.globalAlpha = Math.max(0, a.alpha);
+    if (a.state === "fly") {
+      const sh = set.thrown, fw = sh.img.naturalWidth / sh.frames, fh = sh.img.naturalHeight;
+      const f = Math.floor(a.tick / AXE_SPIN_TICKS) % sh.frames;
+      if (fw) ctx.drawImage(sh.img, f * fw, 0, fw, fh,
+        Math.round(a.x - fw * S / 2), Math.round(a.y - fh * S / 2), fw * S, fh * S);
+    } else {
+      // steckt im Boden: Klinge 1px in die Plattform, mittig um a.x
+      const lw = set.landed.naturalWidth, lh = set.landed.naturalHeight;
+      const lx = Math.round(a.x - lw * S / 2), ly = Math.round(a.groundY + S - lh * S);
+      if (a.state === "landing") {
+        const sh = set.landing, fw = sh.img.naturalWidth / sh.frames, fh = sh.img.naturalHeight;
+        const f = Math.min(sh.frames - 1, Math.floor(a.tick / AXE_LANDING_TICKS));
+        if (fw) ctx.drawImage(sh.img, f * fw, 0, fw, fh,
+          lx - set.landedOff[0] * S, ly - set.landedOff[1] * S, fw * S, fh * S);
+      } else if (lw) {
+        ctx.drawImage(set.landed, lx, ly, lw * S, lh * S);
+      }
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawBullets() {
+  for (const b of bullets) {
+    // gegen Ende der Reichweite ausblenden, damit man die Grenze "sieht"
+    const fade = Math.min(1, Math.max(0, (BULLET_RANGE - b.dist) / (BULLET_RANGE * 0.25)));
+    ctx.globalAlpha = fade;
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(b.angle);
+    ctx.drawImage(bulletImg, -8, -1, 8, 2);         // Leuchtspur hinter der Kugel
+    ctx.fillStyle = "#fff6c8"; ctx.fillRect(-2, -1, 2, 2); // heller Kopf
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.globalAlpha = Math.min(1, p.life / 30);
+    if (p.type === "hitfx") {
+      ctx.globalAlpha = 1;
+      const img = p.fx.img;
+      if (!img.naturalWidth) continue;
+      const fw = img.naturalWidth / p.fx.frames, fh = img.naturalHeight;
+      const f = Math.min(p.fx.frames - 1, Math.floor((p.maxLife - p.life) / HIT_FX_TICKS));
+      const w = fw * HIT_FX_SCALE, h = fh * HIT_FX_SCALE;
+      drawFrame(img, f * fw, 0, fw, fh, Math.round(p.x - w / 2), Math.round(p.y - h / 2), w, h, p.flip, false);
+      continue;
+    }
+    if (p.type === "casing") ctx.drawImage(casingImg, Math.round(p.x) - 1, Math.round(p.y) - 1, 2, 2);
+    else { ctx.fillStyle = p.color; ctx.fillRect(Math.round(p.x), Math.round(p.y), 2, 2); }
+  }
+  ctx.globalAlpha = 1;
+}
+
+let animTimer = 0;
+function drawPlayer(x, y, scale) {
+  const moving = Math.abs(player.vx) > 0.3;
+  let sheet;
+  if (player.facing === 1) sheet = moving ? runRightImg : idleRightImg;
+  else sheet = moving ? runLeftImg : idleLeftImg;
+
+  const frameW = sheet.naturalWidth / CHAR_FRAMES;
+  const frameH = sheet.naturalHeight;
+  const fps = moving ? 10 : 5;
+  const frame = Math.floor(animTimer / (1000 / fps)) % CHAR_FRAMES;
+
+  const drawScale = SPRITE_SCALE * scale;
+  const drawW = frameW * drawScale;
+  const drawH = frameH * drawScale;
+  // horizontal mittig ueber der Hitbox, unten an der Hitbox-Grundlinie ausgerichtet
+  const drawX = Math.round(x + (player.w * scale - drawW) / 2);
+  const drawY = Math.round(y + player.h * scale - drawH);
+
+  ctx.globalAlpha = player.invulnFrames > 0 && Math.floor(player.invulnFrames / 5) % 2 === 0 ? 0.4 : 1;
+  if (sheet.naturalWidth) {
+    ctx.drawImage(sheet, frame * frameW, 0, frameW, frameH, drawX, drawY, drawW, drawH);
+  } else {
+    // Fallback-Platzhalter, falls ein Sheet (noch) nicht geladen ist
+    ctx.fillStyle = "#e07a2c";
+    ctx.fillRect(x, y, player.w * scale, player.h * scale);
+  }
+  drawGun(x, y, scale, frame);
+  ctx.globalAlpha = 1;
+}
+
+function drawGun(x, y, scale, charFrame) {
+  const o = gunOrigin(x, y, scale);
+  let sheet, f, off;
+  if (gun.state === "shoot") {
+    sheet = o.cfg.shoot; f = Math.min(2, Math.floor(gun.tick / SHOOT_ANIM_TICKS)); off = o.cfg.shootOff;
+  } else if (gun.state === "reload") {
+    sheet = o.cfg.reload; f = Math.min(10, Math.floor(gun.tick / RELOAD_ANIM_TICKS)); off = o.cfg.reloadOff;
+  } else {
+    sheet = o.cfg.idle; f = charFrame % sheet.frames; off = [0, 0]; // laeuft synchron zum Koerper
+  }
+  const img = sheet.img;
+  if (!img.naturalWidth) return;
+  const fw = img.naturalWidth / sheet.frames, fh = img.naturalHeight;
+  ctx.drawImage(img, f * fw, 0, fw, fh,
+    Math.round(o.x + off[0] * o.S), Math.round(o.y + off[1] * o.S), fw * o.S, fh * o.S);
+
+  if (gun.flash > 0) {
+    const mx = o.x + o.cfg.muzzle[0] * o.S, my = o.y + o.cfg.muzzle[1] * o.S;
+    const fx = mx + Math.cos(gun.angle) * 3, fy = my + Math.sin(gun.angle) * 3;
+    ctx.fillStyle = "rgba(255, 236, 160, 0.9)"; ctx.fillRect(fx - 3, fy - 3, 6, 6);
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(fx - 1, fy - 1, 2, 2);
+  }
+}
+
+let lastT = performance.now();
+function loop(t) {
+  animTimer += t - lastT;
+  lastT = t;
+  update();
+  if (gameState === "auth" || gameState === "menu") menuCamera(t);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// =====================================================================
+// UI: Login/Registrieren, Hauptmenue, Pause, Game Over
+// =====================================================================
+// Spielzustaende: "auth" -> "menu" -> "playing" <-> "paused", "gameover"
+let gameState = "auth";
+
+// --- Backend ----------------------------------------------------------
+// Adresse des FastAPI-Servers (uvicorn startet standardmaessig auf Port 8000)
+const API_BASE = "http://127.0.0.1:8000";
+// Der Prototyp im Chat kann keinen lokalen Server erreichen und benutzt
+// darum ein nachgebautes Backend im Browser (window.USE_MOCK_API = true).
+const USE_MOCK_API = window.USE_MOCK_API === true;
+
+class ApiError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+
+async function api(path, { method = "GET", body, auth = false } = {}) {
+  if (USE_MOCK_API) return mockApi(path, method, body, auth ? session.token : null);
+  const headers = {};
+  if (body) headers["Content-Type"] = "application/json";
+  if (auth && session.token) headers["token"] = session.token; // Backend erwartet Header "token"
+  let res;
+  try {
+    res = await fetch(API_BASE + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  } catch {
+    throw new ApiError(0, "Server nicht erreichbar. Läuft das Backend?");
+  }
+  let data = {};
+  try { data = await res.json(); } catch { /* leere Antwort */ }
+  if (!res.ok) {
+    // FastAPI: detail ist ein Text (HTTPException) oder eine Liste (Validierungsfehler)
+    const msg = typeof data.detail === "string" ? data.detail : "Eingabe wurde vom Server abgelehnt.";
+    throw new ApiError(res.status, msg);
+  }
+  return data;
+}
+
+// Nachbau der Backend-Antworten, nur fuer den Prototyp (Daten bleiben im Browser)
+function mockApi(path, method, body, token) {
+  const load = (k) => { try { return JSON.parse(localStorage.getItem(k)) || {}; } catch { return {}; } };
+  const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* egal */ } };
+  const users = load("mock_users"), sessions = load("mock_sessions");
+  return new Promise((resolve, reject) => setTimeout(() => {
+    if (path === "/auth/register") {
+      if (users[body.username]) return reject(new ApiError(400, "Username ist bereits vergeben."));
+      users[body.username] = body.password; store("mock_users", users);
+      return resolve({ message: "Account erfolgreich erstellt." });
+    }
+    if (path === "/auth/login") {
+      if (users[body.username] !== body.password) return reject(new ApiError(401, "Username oder Passwort ist falsch."));
+      const t = Math.random().toString(36).slice(2);
+      sessions[t] = body.username; store("mock_sessions", sessions);
+      return resolve({ message: "Login erfolgreich!", token: t });
+    }
+    if (path === "/users/me") {
+      if (!sessions[token]) return reject(new ApiError(401, "Ungültiger Token."));
+      return resolve({ id: 1, username: sessions[token] });
+    }
+    if (path === "/auth/logout") {
+      delete sessions[token]; store("mock_sessions", sessions);
+      return resolve({ message: "Logout erfolgreich!" });
+    }
+    reject(new ApiError(404, "Not Found"));
+  }, 350));
+}
+
+// --- Sitzung (Token merken) --------------------------------------------
+const TOKEN_KEY = "zombie_token";
+const session = { token: null, username: null, guest: false };
+function saveToken(token, remember) {
+  try {
+    localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY);
+    (remember ? localStorage : sessionStorage).setItem(TOKEN_KEY, token);
+  } catch { /* Speicher gesperrt: dann eben nur fuer diese Sitzung */ }
+}
+function readToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+function clearToken() {
+  try { localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); } catch { /* egal */ }
+}
+
+// --- Sprites fuer das UI an CSS uebergeben ------------------------------
+// (als CSS-Variablen, damit es im Projekt und im Prototyp gleich funktioniert)
+const UI_SPRITES = {
+  "panel": "Inventory_1.png",
+  "blank-up": "Blank_Not-Pressed.png", "blank-down": "Blank_Pressed.png",
+  "play-up": "Play_Not-Pressed.png", "play-down": "Play_Pressed.png",
+  "quit-up": "Quit_Not-Pressed.png", "quit-down": "Quit_Pressed.png",
+  "yes-up": "Button_Yes_Not-Pressed.png", "yes-down": "Button_Yes_Pressed.png",
+  "no-up": "Button_No_Not-Pressed.png", "no-down": "Button_No_Pressed.png",
+  "check-body": "Checkmark-Body.png", "check-anim": "Checkmark-Sheet5.png",
+  "hp-frame": "HP-Bar.png", "hp-fill": "HP.png",
+};
+const rootStyle = document.documentElement.style;
+for (const [name, file] of Object.entries(UI_SPRITES)) {
+  rootStyle.setProperty(`--img-${name}`, `url("${asset(UI + file)}")`);
+}
+// Pixel-Mauszeiger fuer die Menues: Cursor.png 3x vergroessert
+const cursorImg = new Image();
+cursorImg.onload = () => {
+  const c = document.createElement("canvas");
+  c.width = cursorImg.width * 3; c.height = cursorImg.height * 3;
+  const cx = c.getContext("2d");
+  cx.imageSmoothingEnabled = false;
+  cx.drawImage(cursorImg, 0, 0, c.width, c.height);
+  try { rootStyle.setProperty("--menu-cursor", `url("${c.toDataURL()}") 0 0, default`); } catch { /* Standard-Zeiger */ }
+};
+cursorImg.src = asset(UI + "Cursor.png");
+
+// --- UI-Ebene an die Spielgroesse anpassen -----------------------------
+// Das UI ist fuer 480x270 "UI-Pixel" gebaut (halbe Canvas-Aufloesung)
+// und wird als Ganzes hochskaliert -> Pixel-Art bleibt im Verhaeltnis.
+const uiEl = document.getElementById("ui");
+function fitUI() { uiEl.style.transform = `scale(${stage.clientWidth / 480})`; }
+new ResizeObserver(fitUI).observe(stage);
+fitUI();
+
+// --- Bildschirme umschalten --------------------------------------------
+const screens = {};
+document.querySelectorAll(".screen").forEach(el => { screens[el.dataset.screen] = el; });
+const hintEl = document.getElementById("hint");
+let hintTimer = null;
+
+function showScreen(name) {
+  gameState = name === "pause" ? "paused" : name === "none" ? "playing" : name;
+  for (const [key, el] of Object.entries(screens)) el.hidden = key !== name;
+  hudEl.hidden = !(gameState === "playing" || gameState === "paused");
+  stage.classList.toggle("in-menu", gameState !== "playing");
+  if (gameState !== "playing") hintEl.classList.remove("show");
+  if (gameState !== "playing") { mouse.down = false; shotQueued = false; for (const k in keys) keys[k] = false; }
+  const el = screens[name];
+  if (el) {
+    el.querySelectorAll(".confirm").forEach(c => { c.hidden = true; });
+    el.querySelectorAll(".menu-main").forEach(c => { c.hidden = false; });
+    const first = el.querySelector("[data-autofocus]:not([hidden] *)");
+    if (first) first.focus({ preventScroll: true });
+  }
+}
+
+function startGame() {
+  restart();
+  lastHudKey = ""; lastHudLives = null; lastHudReserve = null;
+  updateHUD();
+  showScreen("none");
+  stage.focus();
+  hintEl.classList.add("show");
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => hintEl.classList.remove("show"), 6000);
+}
+function pauseGame() { if (gameState === "playing") showScreen("pause"); }
+function resumeGame() { showScreen("none"); stage.focus(); }
+
+function onPauseKey() {
+  if (gameState === "playing") return pauseGame();
+  if (gameState !== "paused") return;
+  const confirmBox = screens.pause.querySelector(".confirm");
+  if (!confirmBox.hidden) return closeConfirm(screens.pause);
+  resumeGame();
+}
+
+// Ja/Nein-Abfrage innerhalb eines Panels
+function openConfirm(screenEl) {
+  screenEl.querySelector(".menu-main").hidden = true;
+  const box = screenEl.querySelector(".confirm");
+  box.hidden = false;
+  box.querySelector(".btn-no").focus({ preventScroll: true });
+}
+function closeConfirm(screenEl) {
+  screenEl.querySelector(".confirm").hidden = true;
+  screenEl.querySelector(".menu-main").hidden = false;
+  screenEl.querySelector("[data-autofocus]").focus({ preventScroll: true });
+}
+
+// Im Menue faehrt die Kamera langsam uebers Level
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+function menuCamera(t) {
+  const range = Math.max(0, LEVEL_WIDTH - W);
+  cameraX = reduceMotion ? range / 2 : range * (0.5 - 0.5 * Math.cos(t / 18000));
+}
+
+// --- Login / Registrieren ----------------------------------------------
+const authForm = document.getElementById("auth-form");
+const authTabs = document.querySelectorAll(".tab");
+const authError = document.getElementById("auth-error");
+const authSubmit = document.getElementById("auth-submit");
+const userInput = document.getElementById("auth-user");
+const passInput = document.getElementById("auth-pass");
+const pass2Input = document.getElementById("auth-pass2");
+const pass2Field = document.getElementById("field-pass2");
+const rememberInput = document.getElementById("auth-remember");
+let authMode = "login";
+
+function setAuthMode(mode) {
+  authMode = mode;
+  authTabs.forEach(t => t.setAttribute("aria-selected", String(t.dataset.mode === mode)));
+  pass2Field.hidden = mode !== "register";
+  passInput.autocomplete = mode === "register" ? "new-password" : "current-password";
+  authSubmit.querySelector("span").textContent = mode === "register" ? "Registrieren" : "Anmelden";
+  setAuthMessage("");
+}
+function setAuthMessage(text, kind = "error") {
+  authError.textContent = text;
+  authError.dataset.kind = kind;
+}
+authTabs.forEach(t => t.addEventListener("click", () => { setAuthMode(t.dataset.mode); userInput.focus(); }));
+
+function validate(username, password, password2) {
+  if (!username) return "Gib einen Benutzernamen ein.";
+  if (!password) return "Gib ein Passwort ein.";
+  if (authMode === "register") {
+    if (username.length < 3 || username.length > 16) return "Benutzername: 3 bis 16 Zeichen.";
+    if (password.length < 4) return "Passwort: mindestens 4 Zeichen.";
+    if (password !== password2) return "Die Passwörter stimmen nicht überein.";
+  }
+  return null;
+}
+
+authForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (authSubmit.disabled) return;
+  const username = userInput.value.trim();
+  const password = passInput.value;
+  const problem = validate(username, password, pass2Input.value);
+  if (problem) return setAuthMessage(problem);
+
+  authSubmit.disabled = true;
+  setAuthMessage(authMode === "register" ? "Konto wird erstellt …" : "Anmelden …", "info");
+  try {
+    if (authMode === "register") await api("/auth/register", { method: "POST", body: { username, password } });
+    const data = await api("/auth/login", { method: "POST", body: { username, password } });
+    session.token = data.token; session.username = username; session.guest = false;
+    saveToken(data.token, rememberInput.checked);
+    passInput.value = ""; pass2Input.value = "";
+    setAuthMessage("");
+    enterMenu();
+  } catch (err) {
+    setAuthMessage(err.message);
+  } finally {
+    authSubmit.disabled = false;
+  }
+});
+
+document.getElementById("guest-btn").addEventListener("click", () => {
+  session.token = null; session.username = null; session.guest = true;
+  enterMenu();
+});
+
+// --- Hauptmenue ---------------------------------------------------------
+const menuUser = document.getElementById("menu-user");
+function enterMenu() {
+  menuUser.textContent = session.guest ? "Du spielst als Gast." : `Angemeldet als ${session.username}`;
+  screens.menu.querySelector(".confirm-text").textContent = session.guest ? "Zurück zur Anmeldung?" : "Wirklich abmelden?";
+  showScreen("menu");
+}
+async function logout() {
+  if (session.token) {
+    try { await api("/auth/logout", { method: "POST", auth: true }); } catch { /* lokal trotzdem abmelden */ }
+  }
+  clearToken();
+  session.token = null; session.username = null; session.guest = false;
+  setAuthMode("login");
+  showScreen("auth");
+}
+
+// --- Alle Buttons ueber data-action verdrahten -------------------------
+const ACTIONS = {
+  "play": startGame,
+  "ask-logout": () => openConfirm(screens.menu),
+  "logout": logout,
+  "resume": resumeGame,
+  "restart": startGame,
+  "ask-menu": () => openConfirm(screens.pause),
+  "to-menu": enterMenu,
+  "cancel": (btn) => closeConfirm(btn.closest(".screen")),
+};
+document.querySelectorAll("[data-action]").forEach(btn => {
+  btn.addEventListener("click", () => ACTIONS[btn.dataset.action](btn));
+});
+
+// --- Start: gespeicherten Token pruefen --------------------------------
+setAuthMode("login");
+showScreen("auth");
+(async () => {
+  const token = readToken();
+  if (!token) return;
+  session.token = token;
+  try {
+    const me = await api("/users/me", { auth: true });
+    session.username = me.username;
+    if (gameState === "auth") enterMenu();
+  } catch (err) {
+    if (err.status === 401) clearToken(); // abgelaufen -> neu anmelden
+    session.token = null;
+  }
+})();

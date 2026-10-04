@@ -513,6 +513,30 @@ const SECRET_OPENING = { xMin: 108, xMax: 147 };
 let cameraX = 0;
 let shakeTicks = 0; // Bildschirm-Wackeln (z. B. beim Boden-Stampfer)
 let gameOver = false;
+let levelCompleted = false;
+
+async function completeLevel() {
+    if (levelCompleted) return;
+
+    levelCompleted = true;
+
+    try {
+        await api("/game/level/complete", {
+            method: "POST",
+            body: {
+                level_id: 1
+            },
+            auth: true
+        });
+
+        console.log("Level 1 abgeschlossen.");
+        window.location.href = "overworld.html";
+
+    } catch (err) {
+        console.error("Level konnte nicht abgeschlossen werden:", err);
+        levelCompleted = false;
+    }
+}
 let jumpKeyWasDown = false;
 
 // --- Eingabe: Tastatur ---
@@ -1338,7 +1362,17 @@ function update() {
   }
 
   player.x = Math.max(0, Math.min(player.x, LEVEL_WIDTH - player.w));
+
+  if (player.x >= LEVEL_WIDTH - player.w && !levelCompleted) {
+    completeLevel();
+}
+
   cameraX = Math.max(0, Math.min(player.x - W / 2, LEVEL_WIDTH - W));
+
+  if (player.x + player.w >= LEVEL_WIDTH - 2) {
+    completeLevel();
+    return;
+  }
 
   updateAim();
   updateGun();
@@ -2029,11 +2063,6 @@ authForm.addEventListener("submit", async (e) => {
   }
 });
 
-document.getElementById("guest-btn").addEventListener("click", () => {
-  session.token = null; session.username = null; session.guest = true;
-  enterMenu();
-});
-
 // --- Hauptmenue ---------------------------------------------------------
 const menuUser = document.getElementById("menu-user");
 function enterMenu() {
@@ -2053,7 +2082,9 @@ async function logout() {
 
 // --- Alle Buttons ueber data-action verdrahten -------------------------
 const ACTIONS = {
-  "play": startGame,
+  "play": () => {
+        window.location.href = "overworld.html";
+    },
   "ask-logout": () => openConfirm(screens.menu),
   "logout": logout,
   "resume": resumeGame,
@@ -2068,17 +2099,36 @@ document.querySelectorAll("[data-action]").forEach(btn => {
 
 // --- Start: gespeicherten Token pruefen --------------------------------
 setAuthMode("login");
-showScreen("auth");
+
 (async () => {
   const token = readToken();
-  if (!token) return;
+
+  if (!token) {
+    showScreen("auth");
+    return;
+  }
+
   session.token = token;
+
   try {
     const me = await api("/users/me", { auth: true });
     session.username = me.username;
-    if (gameState === "auth") enterMenu();
+
+    const params = new URLSearchParams(window.location.search);
+    const level = params.get("level");
+
+    if (level === "1") {
+      startGame();
+    } else {
+      enterMenu();
+    }
+
   } catch (err) {
-    if (err.status === 401) clearToken(); // abgelaufen -> neu anmelden
+    if (err.status === 401) {
+      clearToken();
+    }
+
     session.token = null;
+    showScreen("auth");
   }
 })();

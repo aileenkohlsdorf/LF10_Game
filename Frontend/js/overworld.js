@@ -6,11 +6,6 @@ ctx.imageSmoothingEnabled = false;
 let map;
 let images = new Map();
 
-
-// ======================================================
-// CHARACTER
-// ======================================================
-
 const playerImages = {};
 
 const playerAnimations = {
@@ -20,27 +15,12 @@ const playerAnimations = {
     up: "assets/Character_up_run_no-hands-Sheet6.png"
 };
 
-
-// ======================================================
-// TASTEN
-// ======================================================
-
 const keys = {};
-
-
-// ======================================================
-// KAMERA
-// ======================================================
 
 const camera = {
     x: 0,
     y: 0
 };
-
-
-// ======================================================
-// SPIELER
-// ======================================================
 
 const player = {
     x: 600,
@@ -61,15 +41,19 @@ const player = {
     animationSpeed: 0.10
 };
 
+    const levelPoints = [
+    {
+        x: 1520,
+        y: 608,
+        width: 32,
+        height: 32,
+        level: "level1"
+    }
+];
+
     const zoom = 1.5;
 
-
-// ======================================================
-// TASTATUR
-// ======================================================
-
 window.addEventListener("keydown", (event) => {
-
     keys[event.code] = true;
 
     if (
@@ -82,19 +66,35 @@ window.addEventListener("keydown", (event) => {
     }
 });
 
-
 window.addEventListener("keyup", (event) => {
-
     keys[event.code] = false;
 });
 
+window.addEventListener("keydown", (event) => {
+    if (event.code !== "KeyE") {
+        return;
+    }
 
-// ======================================================
-// MAP LADEN
-// ======================================================
+    // Position von Level 1
+    const level1Point = {
+        x: 1520,
+        y: 608,
+        width: 32,
+        height: 32
+    };
+
+    const playerIsAtLevel1 =
+        player.x < level1Point.x + level1Point.width &&
+        player.x + player.width > level1Point.x &&
+        player.y < level1Point.y + level1Point.height &&
+        player.y + player.height > level1Point.y;
+
+    if (playerIsAtLevel1) {
+        window.location.href = "index.html?level=1";
+    }
+});
 
 async function loadMap() {
-
     const response = await fetch("maps/overworld.json");
 
     if (!response.ok) {
@@ -114,15 +114,8 @@ async function loadMap() {
     requestAnimationFrame(gameLoop);
 }
 
-
-// ======================================================
-// TILESETS LADEN
-// ======================================================
-
 async function loadTilesets() {
-
     for (const tileset of map.tilesets) {
-
         const image = new Image();
 
         image.src = tileset.imageData;
@@ -145,13 +138,7 @@ async function loadTilesets() {
     }
 }
 
-
-// ======================================================
-// CHARACTER ANIMATIONEN LADEN
-// ======================================================
-
 async function loadPlayerAnimations() {
-
     for (
         const [direction, path]
         of Object.entries(playerAnimations)
@@ -181,21 +168,13 @@ async function loadPlayerAnimations() {
                     )
                 );
             };
-
             image.src = path;
         });
-
         playerImages[direction] = image;
     }
 }
 
-
-// ======================================================
-// KOLLISION ERKENNEN
-// ======================================================
-
 function isCollidableTile(tile) {
-
     if (!tile) {
         return false;
     }
@@ -247,11 +226,6 @@ function isCollidableTile(tile) {
     );
 }
 
-
-// ======================================================
-// VORDERGRUND OBJEKTE
-// ======================================================
-
 function isForegroundTile(tile) {
 
     if (!tile) {
@@ -278,11 +252,6 @@ function isForegroundTile(tile) {
     );
 }
 
-
-// ======================================================
-// KOLLISIONS-RECHTECK
-// ======================================================
-
 function getCollisionRect(tileX, tileY) {
 
     return {
@@ -293,11 +262,6 @@ function getCollisionRect(tileX, tileY) {
     };
 }
 
-
-// ======================================================
-// RECHTECK-KOLLISION
-// ======================================================
-
 function rectanglesCollide(a, b) {
 
     return (
@@ -307,11 +271,6 @@ function rectanglesCollide(a, b) {
         a.y + a.height > b.y
     );
 }
-
-
-// ======================================================
-// SPIELER-KOLLISION MIT MAP
-// ======================================================
 
 function playerCollidesWithMap(x, y) {
 
@@ -397,17 +356,10 @@ function playerCollidesWithMap(x, y) {
             }
         }
     }
-
     return false;
 }
 
-
-// ======================================================
-// SPIELER BEWEGEN
-// ======================================================
-
 function update(deltaTime) {
-
     const movement =
         player.speed * deltaTime;
 
@@ -415,11 +367,6 @@ function update(deltaTime) {
 
     let newX = player.x;
     let newY = player.y;
-
-
-    // ==================================================
-    // LINKS
-    // ==================================================
 
     if (
         keys["KeyA"] ||
@@ -432,11 +379,6 @@ function update(deltaTime) {
         player.moving = true;
     }
 
-
-    // ==================================================
-    // RECHTS
-    // ==================================================
-
     if (
         keys["KeyD"] ||
         keys["ArrowRight"]
@@ -448,11 +390,6 @@ function update(deltaTime) {
         player.moving = true;
     }
 
-
-    // ==================================================
-    // KOLLISION X
-    // ==================================================
-
     if (
         !playerCollidesWithMap(
             newX,
@@ -462,11 +399,6 @@ function update(deltaTime) {
 
         player.x = newX;
     }
-
-
-    // ==================================================
-    // HOCH
-    // ==================================================
 
     if (
         keys["KeyW"] ||
@@ -479,11 +411,6 @@ function update(deltaTime) {
         player.moving = true;
     }
 
-
-    // ==================================================
-    // RUNTER
-    // ==================================================
-
     if (
         keys["KeyS"] ||
         keys["ArrowDown"]
@@ -495,11 +422,6 @@ function update(deltaTime) {
         player.moving = true;
     }
 
-
-    // ==================================================
-    // KOLLISION Y
-    // ==================================================
-
     if (
         !playerCollidesWithMap(
             player.x,
@@ -509,11 +431,6 @@ function update(deltaTime) {
 
         player.y = newY;
     }
-
-
-    // ==================================================
-    // ANIMATION
-    // ==================================================
 
     if (player.moving) {
 
@@ -541,11 +458,6 @@ function update(deltaTime) {
         player.animationTimer = 0;
     }
 
-
-    // ==================================================
-    // MAP-GRENZEN
-    // ==================================================
-
     const worldWidth =
         map.metadata.width *
         map.metadata.tileSize;
@@ -571,11 +483,6 @@ function update(deltaTime) {
             worldHeight - player.height
         )
     );
-
-
-    // ==================================================
-    // KAMERA
-    // ==================================================
 
     camera.x =
         player.x -
@@ -605,12 +512,7 @@ function update(deltaTime) {
     );
 }
 
-// ======================================================
-// MAP ZEICHNEN
-// ======================================================
-
 function drawMap() {
-
     for (const layer of map.layers) {
 
         if (!layer.visible) {
@@ -693,19 +595,11 @@ function drawMap() {
     }
 }
 
-
-// ======================================================
-// VORDERGRUND OBJEKTE ZEICHNEN
-// ======================================================
-
 function drawForegroundObjects() {
-
     for (const layer of map.layers) {
-
         if (!layer.visible) {
             continue;
         }
-
 
         for (
             let y = 0;
@@ -813,13 +707,7 @@ function drawForegroundObjects() {
     }
 }
 
-
-// ======================================================
-// SPIELER ZEICHNEN
-// ======================================================
-
 function drawPlayer() {
-
     const image =
         playerImages[player.direction];
 
@@ -828,8 +716,6 @@ function drawPlayer() {
         return;
     }
 
-
-    // Wir haben 6 Frames pro Sheet
     const frameCount = 6;
 
     const frameWidth =
@@ -880,16 +766,9 @@ function drawPlayer() {
     );
 }
 
-
-// ======================================================
-// GAME LOOP
-// ======================================================
-
 let lastTime = 0;
 
-
 function gameLoop(currentTime) {
-
     const deltaTime =
         Math.min(
             (currentTime - lastTime) / 1000,
@@ -898,7 +777,6 @@ function gameLoop(currentTime) {
 
     lastTime = currentTime;
 
-
     ctx.clearRect(
         0,
         0,
@@ -906,26 +784,16 @@ function gameLoop(currentTime) {
         canvas.height
     );
 
-
     update(deltaTime);
-
     drawMap();
-
     drawPlayer();
-
     drawForegroundObjects();
-
-
     requestAnimationFrame(
         gameLoop
     );
 }
 
-
-// ======================================================
-// START
-// ======================================================
-
+// Start
 loadMap().catch(error => {
 
     console.error(error);

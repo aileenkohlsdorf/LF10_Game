@@ -21,6 +21,22 @@ const UI = window.GameUI;
 if (!UI.readToken()) { UI.goTo("login"); return; }
 UI.save = { coins: 0, bullets: 0 };
 
+const PENDING_PROGRESS_KEY = "untot_pending_progress";
+
+function getPendingProgress() {
+  try {
+    return JSON.parse(sessionStorage.getItem(PENDING_PROGRESS_KEY)) || {
+      bullets: null,
+      completedLevels: []
+    };
+  } catch {
+    return {
+      bullets: null,
+      completedLevels: []
+    };
+  }
+}
+
 // --- Menue in die Seite einfuegen ---------------------------------------
 const dim = document.createElement("div");
 dim.className = "ui-dim";
@@ -102,19 +118,56 @@ window.addEventListener("blur", openMenu);
 
 // --- Speichern / Abmelden ------------------------------------------------
 async function save(btn) {
-  const data = typeof window.getSaveData === "function" ? window.getSaveData() : UI.save;
+  const pending = getPendingProgress();
+  const data = typeof window.getSaveData === "function"
+    ? window.getSaveData()
+    : UI.save;
+
+  const bullets = pending.bullets !== null
+    ? pending.bullets
+    : data.bullets;
+
   btn.disabled = true;
   setStatus("Speichern …");
+
   try {
+    // Spielstand speichern
     const res = await UI.api("/game/save", {
-      method: "POST", auth: true,
-      body: { coins: Math.round(data.coins || 0), bullets: Math.round(data.bullets || 0) },
+      method: "POST",
+      auth: true,
+      body: {
+        coins: 0,
+        bullets: Math.round(bullets || 0)
+      },
     });
-    UI.save = { coins: res.coins, bullets: res.bullets };
+
+    UI.save = {
+      coins: res.coins,
+      bullets: res.bullets
+    };
+
+    // Noch nicht dauerhaft gespeicherte Level jetzt ebenfalls speichern
+    for (const levelId of pending.completedLevels) {
+      await UI.api("/game/level/complete", {
+        method: "POST",
+        auth: true,
+        body: {
+          level_id: levelId
+        },
+      });
+    }
+
     setStatus("Spielstand gespeichert.", "ok");
+
   } catch (err) {
-    if (err.status === 401) { UI.clearLogin(); UI.goTo("login"); return; }
+    if (err.status === 401) {
+      UI.clearLogin();
+      UI.goTo("login");
+      return;
+    }
+
     setStatus(err.message, "error");
+
   } finally {
     btn.disabled = false;
     btn.focus({ preventScroll: true });
@@ -122,7 +175,17 @@ async function save(btn) {
 }
 
 async function quit() {
-  try { await UI.api("/auth/logout", { method: "POST", auth: true }); } catch { /* trotzdem abmelden */ }
+  try {
+    await UI.api("/auth/logout", {
+      method: "POST",
+      auth: true
+    });
+  } catch {
+    // trotzdem abmelden
+  }
+
+  sessionStorage.removeItem(PENDING_PROGRESS_KEY);
+
   UI.clearLogin();
   UI.goTo("login");
 }

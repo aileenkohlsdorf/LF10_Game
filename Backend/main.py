@@ -158,7 +158,7 @@ def save_game(save: SaveGameRequest, token: str = Header(...)):
     user_id = result["user_id"]
 
     coins = max(0, min(save.coins, 500))
-    bullets = max(0, min(save.bullets, 50))
+    bullets = max(0, min(save.bullets, 58))
 
     connection.execute(
         """

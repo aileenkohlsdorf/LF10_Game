@@ -513,6 +513,30 @@ let cameraX = 0;
 let shakeTicks = 0; // Bildschirm-Wackeln (z. B. beim Boden-Stampfer)
 let gameOver = false;
 let levelCompleted = false;
+let savedBullets = null;
+
+const PENDING_PROGRESS_KEY = "untot_pending_progress";
+
+function getPendingProgress() {
+    try {
+        return JSON.parse(sessionStorage.getItem(PENDING_PROGRESS_KEY)) || {
+            bullets: null,
+            completedLevels: []
+        };
+    } catch {
+        return {
+            bullets: null,
+            completedLevels: []
+        };
+    }
+}
+
+function setPendingProgress(progress) {
+    sessionStorage.setItem(
+        PENDING_PROGRESS_KEY,
+        JSON.stringify(progress)
+    );
+}
 
 async function completeLevel() {
     if (levelCompleted) return;
@@ -520,15 +544,17 @@ async function completeLevel() {
     levelCompleted = true;
 
     try {
-        await api("/game/level/complete", {
-            method: "POST",
-            body: {
-                level_id: 1
-            },
-            auth: true
-        });
+        const progress = getPendingProgress();
 
-        console.log("Level 1 abgeschlossen.");
+        progress.bullets = gun.ammo + gun.reserve;
+
+        if (!progress.completedLevels.includes(1)) {
+            progress.completedLevels.push(1);
+        }
+
+        setPendingProgress(progress);
+
+        console.log("Level 1 abgeschlossen – noch nicht dauerhaft gespeichert.");
         window.location.href = "overworld.html";
 
     } catch (err) {
@@ -616,7 +642,26 @@ function restart() {
   player.x = 24; player.y = GROUND[0].y - player.h;
   player.vx = 0; player.vy = 0; player.lives = 5; player.invulnFrames = 90;
   player.inSecretRoom = false; player.jumpsUsed = 0;
-  gun.ammo = MAG_SIZE; gun.reserve = START_RESERVE; gun.state = "idle"; gun.tick = 0; gun.cooldown = 0; gun.flash = 0;
+  const pending = getPendingProgress();
+
+  const pendingBullets = Number.isFinite(pending.bullets)
+      ? Math.max(0, pending.bullets)
+      : null;
+
+  const bulletsToUse = pendingBullets !== null
+      ? pendingBullets
+      : Number.isFinite(savedBullets)
+          ? Math.max(0, savedBullets)
+          : null;
+
+  if (bulletsToUse !== null) {
+      gun.ammo = Math.min(MAG_SIZE, bulletsToUse);
+      gun.reserve = Math.max(0, bulletsToUse - gun.ammo);
+  } else {
+      gun.ammo = MAG_SIZE;
+      gun.reserve = START_RESERVE;
+  }
+  gun.state = "idle"; gun.tick = 0; gun.cooldown = 0; gun.flash = 0;
   bullets = []; particles = []; floaters = [];
   spawnEnemies();
   spawnPickups();
@@ -1962,8 +2007,22 @@ document.querySelectorAll("[data-action]").forEach(btn => {
 //  trotzdem zuerst beim Login.)
 const LOGIN_PAGE = "login.html";
 const cameFromOverworld = new URLSearchParams(window.location.search).has("level");
+
 if (!readToken() || !cameFromOverworld) {
   window.location.replace(LOGIN_PAGE);
 } else {
-  startGame();
+  (async () => {
+    try {
+      const save = await api("/game/save", {
+        auth: true
+      });
+
+      savedBullets = Number(save.bullets);
+    } catch (err) {
+      console.error("Spielstand konnte nicht geladen werden:", err);
+      savedBullets = null;
+    }
+
+    startGame();
+  })();
 }

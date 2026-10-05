@@ -40,3 +40,11 @@ Creator:
 - TheLazyStone on Itch.io (Apocalypse Asset Pack)
 - phewcumber on Itch.io (Monster Platformer, Rat Asset Pack)
 
+## So wird das Projekt gestartet:
+
+Zwei Terminals öffnen:
+1. Terminal: python -m uvicorn Backend.main:app --reload
+2. Terminal (hierfür muss man im Frontend Ordner sein): python -m http.server 5500
+
+Browser öffnen und http://127.0.0.1:5500/Frontend/login.html öffnen. 
+
